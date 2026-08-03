@@ -1,0 +1,34 @@
+name: build-check
+
+on:
+  push:
+    branches: [main, "exp/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build release (macOS)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Swift version
+        run: swift --version
+      - name: Build release (frozen deps, limited jobs for runner RAM)
+        run: swift build -c release --force-resolved-versions -j 2
+      - name: Unit tests without model (frozen deps)
+        run: swift test --force-resolved-versions -j 2
+        continue-on-error: true
+
+  build-debug:
+    name: Build debug (catches type-check errors fast)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build debug
+        run: swift build --force-resolved-versions -j 2
