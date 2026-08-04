@@ -6,6 +6,9 @@ const char* steel_gemm_gather_nax() {
 
 // Auto generated source for mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
 // Copyright © 2024 Apple Inc.

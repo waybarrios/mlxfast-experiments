@@ -815,6 +815,13 @@ struct QuantizedBlockLoader<
     src += tile_stride;
     if (reduction_dim == 1) {
       // if (group_steps > 1) {
+      //   group_step_cnt++;
+      //   if (group_step_cnt == group_steps) {
+      //     group_step_cnt = 0;
+      //     scales++;
+      //     biases++;
+      //   }
+      // } else {
       scales += n_groups;
       biases += n_groups;
       // }
@@ -1121,6 +1128,9 @@ METAL_FUNC void qmm_n_nax_tgp_impl(
   biases += y_col * K_g;
   y += y_row * static_cast<int64_t>(N) + y_col;
 
+  // Make the x loader and mma operation
+  // const short num_els = min(BM, M - y_row);
+  // const short num_outs = min(BN, N - y_col);
   loader_w_t loader_w(wl, scales, biases, K, Ws, simd_gid, simd_lid);
 
   constexpr short SM = BM / WM;

@@ -80,6 +80,10 @@ ensure_batch_contiguous(const array& x, metal::Device& d, const Stream& s) {
 }
 
 // Prefill split-K threadgroup regrouping. This preserves BK=512, the
+// 4096-element partition size, the partition count, and SM=SN=32 while
+// changing 128x128/WM4xWN4 threadgroups to 64x64/WM2xWN2. Each output keeps
+// the same k-ascending in-register MMA chain; only threadgroup ownership
+// changes. Set DARKBLOOM_STEEL_PREFILL_TILE=0 for the accepted geometry.
 static bool darkbloom_steel_prefill_tile() {
   static bool enabled = []() {
     const char* value = getenv("DARKBLOOM_STEEL_PREFILL_TILE");
@@ -89,6 +93,9 @@ static bool darkbloom_steel_prefill_tile() {
 }
 
 
+// Ground-truth dispatch trace (DARKBLOOM_STEEL_TRACE=1): prints the actual
+// steel kernel base name + geometry at every nax GEMM dispatch. Never set
+// inside timed windows (stderr I/O).
 static bool darkbloom_steel_trace() {
   static bool v = []() {
     const char* e = getenv("DARKBLOOM_STEEL_TRACE");
@@ -98,6 +105,9 @@ static bool darkbloom_steel_trace() {
 }
 } // namespace
 
+///////////////////////////////////////////////////////////////////////////////
+// Steel matmul fallback
+///////////////////////////////////////////////////////////////////////////////
 
 #define GEMM_TPARAM_MACRO(devc)                                           \
   if (devc == 'g' || devc == 'p') { /* Small device */                    \
@@ -182,6 +192,9 @@ static bool darkbloom_steel_trace() {
     wn = 2;                                                               \
   }
 
+///////////////////////////////////////////////////////////////////////////////
+// Regular steel matmul dispatch
+///////////////////////////////////////////////////////////////////////////////
 
 template <bool CHECK_AB>
 void steel_matmul_regular_axpby_nax(
@@ -267,6 +280,18 @@ void steel_matmul_regular_axpby_nax(
   // Encode and dispatch kernel
   auto& compute_encoder = metal::get_command_encoder(s);
   auto kernel = get_steel_gemm_fused_nax_kernel(
+      /* metal::Device& d = */ d,
+      /* const std::string& kernel_name = */ base_name,
+      /* const std::string& hash_name = */ hash_name,
+      /* const metal::MTLFCList& func_consts = */ func_consts,
+      /* const array& out = */ out,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* int bm = */ bm,
+      /* int bn = */ bn,
+      /* int bk = */ bk,
+      /* int wm = */ wm,
+      /* int wn = */ wn);
 
   compute_encoder.set_compute_pipeline_state(kernel);
 
@@ -282,6 +307,19 @@ void steel_matmul_regular_axpby_nax(
 
   // Prepare steel matmul params
   GEMMParams params{/* const int M = */ M,
+                    /* const int N = */ N,
+                    /* const int K = */ K,
+                    /* const int lda = */ lda,
+                    /* const int ldb = */ ldb,
+                    /* const int ldd = */ ldd,
+                    /* const int tiles_n = */ tn,
+                    /* const int tiles_m = */ tm,
+                    /* const int64_t batch_stride_a = */ A_batch_stride,
+                    /* const int64_t batch_stride_b = */ B_batch_stride,
+                    /* const int64_t batch_stride_d = */ matrix_stride_out,
+                    /* const int swizzle_log = */ swizzle_log,
+                    /* const int gemm_k_iterations_aligned = */ (K / bk),
+                    /* const int batch_ndim = */ int(batch_shape.size())};
 
   // Prepare launch grid params
   int tile = 1 << swizzle_log;
@@ -308,6 +346,10 @@ void steel_matmul_regular_axpby_nax(
     int fdc = c.strides()[c.ndim() - 1];
 
     GEMMAddMMParams params{/* const int ldc = */ ldc,
+                           /* const int fdc = */ fdc,
+                           /* const int64_t batch_stride_c = */ C_batch_stride,
+                           /* const float alpha = */ alpha,
+                           /* const float beta = */ beta};
 
     compute_encoder.set_input_array(c, 2);
     compute_encoder.set_bytes(params, 5);
@@ -404,6 +446,18 @@ void steel_matmul_regular_axpby(
   // Encode and dispatch kernel
   auto& compute_encoder = metal::get_command_encoder(s);
   auto kernel = get_steel_gemm_fused_kernel(
+      /* metal::Device& d = */ d,
+      /* const std::string& kernel_name = */ base_name,
+      /* const std::string& hash_name = */ hash_name,
+      /* const metal::MTLFCList& func_consts = */ func_consts,
+      /* const array& out = */ out,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* int bm = */ bm,
+      /* int bn = */ bn,
+      /* int bk = */ bk,
+      /* int wm = */ wm,
+      /* int wn = */ wn);
 
   compute_encoder.set_compute_pipeline_state(kernel);
 
@@ -416,6 +470,19 @@ void steel_matmul_regular_axpby(
 
   // Prepare steel matmul params
   GEMMParams params{/* const int M = */ M,
+                    /* const int N = */ N,
+                    /* const int K = */ K,
+                    /* const int lda = */ lda,
+                    /* const int ldb = */ ldb,
+                    /* const int ldd = */ ldd,
+                    /* const int tiles_n = */ tn,
+                    /* const int tiles_m = */ tm,
+                    /* const int64_t batch_stride_a = */ A_batch_stride,
+                    /* const int64_t batch_stride_b = */ B_batch_stride,
+                    /* const int64_t batch_stride_d = */ matrix_stride_out,
+                    /* const int swizzle_log = */ swizzle_log,
+                    /* const int gemm_k_iterations_aligned = */ (K / bk),
+                    /* const int batch_ndim = */ int(batch_shape.size())};
 
   // Prepare launch grid params
   int tile = 1 << swizzle_log;
@@ -442,6 +509,10 @@ void steel_matmul_regular_axpby(
     int fdc = c.strides()[c.ndim() - 1];
 
     GEMMAddMMParams params{/* const int ldc = */ ldc,
+                           /* const int fdc = */ fdc,
+                           /* const int64_t batch_stride_c = */ C_batch_stride,
+                           /* const float alpha = */ alpha,
+                           /* const float beta = */ beta};
 
     compute_encoder.set_input_array(c, 2);
     compute_encoder.set_bytes(params, 5);
@@ -453,6 +524,9 @@ void steel_matmul_regular_axpby(
   compute_encoder.add_temporaries(std::move(copies));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Split k steel matmul
+///////////////////////////////////////////////////////////////////////////////
 
 template <bool CHECK_AB = true>
 void steel_gemm_splitk_axpby(
@@ -517,6 +591,19 @@ void steel_gemm_splitk_axpby(
   // Encode and dispatch gemm kernel
   auto& compute_encoder = metal::get_command_encoder(s);
   auto kernel = get_steel_gemm_splitk_kernel(
+      /* metal::Device& d = */ d,
+      /* const std::string& kernel_name = */ kname.str(),
+      /* const array& in = */ a,
+      /* const array& out = */ C_split,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* int bm = */ bm,
+      /* int bn = */ bn,
+      /* int bk = */ bk,
+      /* int wm = */ wm,
+      /* int wn = */ wn,
+      /* bool mn_aligned = */ mn_aligned,
+      /* bool k_aligned = */ k_aligned);
 
   compute_encoder.set_compute_pipeline_state(kernel);
 
@@ -524,6 +611,19 @@ void steel_gemm_splitk_axpby(
   int tm = (M + bm - 1) / bm;
 
   GEMMSpiltKParams params{
+      /* const int M = */ M,
+      /* const int N = */ N,
+      /* const int K = */ K,
+      /* const int lda = */ lda,
+      /* const int ldb = */ ldb,
+      /* const int ldc = */ N,
+      /* const int tiles_n = */ tn,
+      /* const int tiles_m = */ tm,
+      /* const int split_k_partitions = */ split_k_partitions,
+      /* const int split_k_partition_stride = */ split_k_partition_stride,
+      /* const int split_k_partition_size = */ split_k_partition_size,
+      /* const int swizzle_log = */ 0, // no swizzle
+      /* const int gemm_k_iterations_aligned = */ gemm_k_iterations};
 
   MTL::Size group_dims = MTL::Size(32, wn, wm);
   MTL::Size grid_dims = MTL::Size(tn, tm, split_k_partitions);
@@ -547,6 +647,11 @@ void steel_gemm_splitk_axpby(
     }
 
     auto kernel = get_steel_gemm_splitk_accum_kernel(
+        /* metal::Device& d = */ d,
+        /* const std::string& kernel_name = */ kernel_name,
+        /* const array& in = */ C_split,
+        /* const array& out = */ out,
+        /* bool axbpy = */ do_axpby);
     compute_encoder.set_compute_pipeline_state(kernel);
 
     // Set the arguments for the kernel
@@ -576,6 +681,9 @@ void steel_gemm_splitk_axpby(
   compute_encoder.add_temporaries(std::move(copies));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// NAX Split k steel matmul
+///////////////////////////////////////////////////////////////////////////////
 
 template <bool CHECK_AB = true>
 void steel_gemm_splitk_axpby_nax(
@@ -660,6 +768,18 @@ void steel_gemm_splitk_axpby_nax(
 
   auto& compute_encoder = metal::get_command_encoder(s);
   auto kernel = get_steel_gemm_splitk_nax_kernel(
+      /* metal::Device& d = */ d,
+      /* const std::string& kernel_name = */ base_name,
+      /* const std::string& hash_name = */ hash_name,
+      /* const metal::MTLFCList& func_consts = */ func_consts,
+      /* const array& in = */ a,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* int bm = */ bm,
+      /* int bn = */ bn,
+      /* int bk = */ bk,
+      /* int wm = */ wm,
+      /* int wn = */ wn);
 
   compute_encoder.set_compute_pipeline_state(kernel);
 
@@ -674,9 +794,25 @@ void steel_gemm_splitk_axpby_nax(
   int tn_swizzled = tn * tile;
 
   GEMMSpiltKParams params{
+      /* const int M = */ M,
+      /* const int N = */ N,
+      /* const int K = */ K,
+      /* const int lda = */ lda,
+      /* const int ldb = */ ldb,
+      /* const int ldc = */ N,
+      /* const int tiles_n = */ tn,
+      /* const int tiles_m = */ tm,
+      /* const int split_k_partitions = */ split_k_partitions,
+      /* const int split_k_partition_stride = */ split_k_partition_stride,
+      /* const int split_k_partition_size = */ split_k_partition_size,
+      /* const int swizzle_log = */ swizzle_log,
+      /* const int gemm_k_iterations_aligned = */ bk_iters_per_partition};
 
   MTL::Size group_dims = MTL::Size(32, wn, wm);
   // Use 1D grid with K-partition-major layout: [Partition0: M×N
+  // tiles][Partition1: M×N tiles]... Grid size is 1D to prevent driver/HW from
+  // using its own heuristic to exploit 2D locality by launching threadgroups in
+  // a non-linear order
   MTL::Size grid_dims =
       MTL::Size(tn_swizzled * tm_swizzled * split_k_partitions, 1, 1);
 
@@ -706,6 +842,11 @@ void steel_gemm_splitk_axpby_nax(
     }
 
     auto kernel = get_steel_gemm_splitk_accum_kernel(
+        /* metal::Device& d = */ d,
+        /* const std::string& kernel_name = */ kernel_name,
+        /* const array& in = */ C_split,
+        /* const array& out = */ out,
+        /* bool axbpy = */ do_axpby);
     compute_encoder.set_compute_pipeline_state(kernel);
 
     // Set the arguments for the kernel
@@ -735,6 +876,9 @@ void steel_gemm_splitk_axpby_nax(
   compute_encoder.add_temporaries(std::move(copies));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Split matmul routing
+///////////////////////////////////////////////////////////////////////////////
 
 template <bool CHECK_AB>
 void steel_matmul_axpby(
@@ -760,6 +904,8 @@ void steel_matmul_axpby(
     float alpha /* = 1.0f */,
     float beta /* = 0.0f */) {
   if (batch_shape.empty()) {
+    /////////////////////////////////////////////////////////////////////////////
+    // Check and collapse batch dimensions
     if constexpr (CHECK_AB) {
       auto [batch_shape_, A_bstride_, B_bstride_, C_bstride_] =
           collapse_batches(a, b, c);
@@ -801,6 +947,8 @@ void steel_matmul_axpby(
     }
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Split K specialization
 
   int _tm = (M + 16 - 1) / 16;
   int _tn = (N + 16 - 1) / 16;
@@ -812,9 +960,28 @@ void steel_matmul_axpby(
   char devc = d.get_architecture().back();
   int min_tmn_threshold = (devc == 's' || devc == 'd') ? 2048 : 1024;
 
+  // Case 1: Small M×N with large K, use SIMD split-K
+  // Max and Ultra dispatch larger sizes to splitk
   if (!use_nax && batch_size_out == 1 && (_tm * _tn) <= min_tmn_threshold &&
       _tk >= 8 && K >= std::max(M, N)) {
     return steel_gemm_splitk_axpby<CHECK_AB>(
+        /* const Stream& s = */ s,
+        /* metal::Device& d = */ d,
+        /* const array& a = */ a,
+        /* const array& b = */ b,
+        /* const array& c = */ c,
+        /* array& out = */ out,
+        /* int M = */ M,
+        /* int N = */ N,
+        /* int K = */ K,
+        /* int batch_size_out = */ batch_size_out,
+        /* int lda = */ lda,
+        /* int ldb = */ ldb,
+        /* bool transpose_a = */ transpose_a,
+        /* bool transpose_b = */ transpose_b,
+        /* std::vector<array>& copies = */ copies,
+        /* float alpha = */ alpha,
+        /* float beta = */ beta);
   }
 
   // Case 2: Large K with sufficient M, N, and NAX is available, use NAX split-K
@@ -822,8 +989,27 @@ void steel_matmul_axpby(
       (K >= 3 * std::max(M, N) ||
        (std::max(M, N) <= 1024 && K > 2 * std::max(M, N)))) {
     return steel_gemm_splitk_axpby_nax<CHECK_AB>(
+        /* const Stream& s = */ s,
+        /* metal::Device& d = */ d,
+        /* const array& a = */ a,
+        /* const array& b = */ b,
+        /* const array& c = */ c,
+        /* array& out = */ out,
+        /* int M = */ M,
+        /* int N = */ N,
+        /* int K = */ K,
+        /* int batch_size_out = */ batch_size_out,
+        /* int lda = */ lda,
+        /* int ldb = */ ldb,
+        /* bool transpose_a = */ transpose_a,
+        /* bool transpose_b = */ transpose_b,
+        /* std::vector<array>& copies = */ copies,
+        /* float alpha = */ alpha,
+        /* float beta = */ beta);
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Regular kernel dispatch
   auto batch_strides = A_batch_stride;
   batch_strides.insert(
       batch_strides.end(), B_batch_stride.begin(), B_batch_stride.end());
@@ -838,11 +1024,62 @@ void steel_matmul_axpby(
 
   if (use_nax) {
     return steel_matmul_regular_axpby_nax<CHECK_AB>(
+        /* const Stream& s = */ s,
+        /* metal::Device& d = */ d,
+        /* const array& a = */ a,
+        /* const array& b = */ b,
+        /* const array& c = */ c,
+        /* array& out = */ out,
+        /* int M = */ M,
+        /* int N = */ N,
+        /* int K = */ K,
+        /* int batch_size_out = */ batch_size_out,
+        /* int lda = */ lda,
+        /* int ldb = */ ldb,
+        /* int ldd = */ N,
+        /* bool transpose_a = */ transpose_a,
+        /* bool transpose_b = */ transpose_b,
+        /* std::vector<array>& copies = */ copies,
+        /* Shape batch_shape = */ std::move(batch_shape),
+        /* Strides batch_strides = */ std::move(batch_strides),
+        /* int64_t A_batch_stride = */ A_batch_stride_,
+        /* int64_t B_batch_stride = */ B_batch_stride_,
+        /* int64_t matrix_stride_out = */ int64_t(M) * N,
+        /* int64_t C_batch_stride = */ C_batch_stride_,
+        /* float alpha = */ alpha,
+        /* float beta = */ beta);
   }
 
   return steel_matmul_regular_axpby<CHECK_AB>(
+      /* const Stream& s = */ s,
+      /* metal::Device& d = */ d,
+      /* const array& a = */ a,
+      /* const array& b = */ b,
+      /* const array& c = */ c,
+      /* array& out = */ out,
+      /* int M = */ M,
+      /* int N = */ N,
+      /* int K = */ K,
+      /* int batch_size_out = */ batch_size_out,
+      /* int lda = */ lda,
+      /* int ldb = */ ldb,
+      /* int ldd = */ N,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* std::vector<array>& copies = */ copies,
+      /* Shape batch_shape = */ std::move(batch_shape),
+      /* Strides batch_strides = */ std::move(batch_strides),
+      /* int64_t A_batch_stride = */ A_batch_stride_,
+      /* int64_t B_batch_stride = */ B_batch_stride_,
+      /* int64_t matrix_stride_out = */ int64_t(M) * N,
+      /* int64_t C_batch_stride = */ C_batch_stride_,
+      /* float alpha = */ alpha,
+      /* float beta = */ beta);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMV dispatch
+///////////////////////////////////////////////////////////////////////////////
 
 template <bool CHECK_AB = true>
 void gemv_axbpy(
@@ -935,6 +1172,11 @@ void gemv_axbpy(
     n_out_per_tgp = bm * sm * tm;
 
     // 8-byte-aligned vector-load fast path for 2-byte float types: the
+    // aligned twin loads identical values in identical order (bit-exact) but
+    // issues one vec<T,4> load per TN=4 group instead of four scalar loads.
+    // Requires 8-byte-aligned matrix/vector base pointers, a leading
+    // dimension that keeps every row 8-byte aligned, and unit batching so the
+    // in-kernel batch stride advance cannot break alignment.
     auto byte_offset = [](const array& arr) {
       return static_cast<size_t>(arr.offset());
     };
@@ -1023,8 +1265,29 @@ inline void gemv(
     Strides A_batch_stride = {},
     Strides B_batch_stride = {}) {
   return gemv_axbpy<false>(
+      /* const Stream& s = */ s,
+      /* metal::Device& d = */ d,
+      /* const array& a = */ a,
+      /* const array& b = */ b,
+      /* const array& c = */ b,
+      /* array& out = */ out,
+      /* int M = */ M,
+      /* int N = */ N,
+      /* int K = */ K,
+      /* int batch_size_out = */ batch_size_out,
+      /* int lda = */ lda,
+      /* int ldb = */ ldb,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* std::vector<array>& copies = */ copies,
+      /* Shape batch_shape = */ batch_shape,
+      /* Strides A_batch_stride = */ A_batch_stride,
+      /* Strides B_batch_stride = */ B_batch_stride);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Matmul implementation
+///////////////////////////////////////////////////////////////////////////////
 
 void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 2);
@@ -1047,15 +1310,21 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   out.set_data(allocator::malloc(out.nbytes()));
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Init checks and prep
 
   int M = a_pre.shape(-2);
   int N = b_pre.shape(-1);
   int K = a_pre.shape(-1);
 
+  // Keep a vector with copies to be cleared in the completed buffer to release
+  // the arrays
   std::vector<array> copies;
   auto [a_transposed, a_cols, a] = check_transpose(copies, s, a_pre, M == 1);
   auto [b_transposed, b_cols, b] = check_transpose(copies, s, b_pre, N == 1);
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Check and collapse batch dimensions
 
   auto [batch_shape, A_batch_stride, B_batch_stride] = collapse_batches(a, b);
 
@@ -1073,16 +1342,57 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     batch_shape = {1};
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Gemv specialization
 
   // Route to gemv if needed
   if (std::min(M, N) == 1) {
     return gemv(
+        /* const Stream& s = */ s,
+        /* metal::Device& d = */ d,
+        /* const array& a = */ a,
+        /* const array& b = */ b,
+        /* array& out = */ out,
+        /* int M = */ M,
+        /* int N = */ N,
+        /* int K = */ K,
+        /* int batch_size_out = */ batch_size_out,
+        /* int lda = */ a_cols,
+        /* int ldb = */ b_cols,
+        /* bool transpose_a = */ a_transposed,
+        /* bool transpose_b = */ b_transposed,
+        /* std::vector<array>& copies = */ copies,
+        /* Shape batch_shape = */ std::move(batch_shape),
+        /* Strides A_batch_stride = */ std::move(A_batch_stride),
+        /* Strides B_batch_stride = */ std::move(B_batch_stride));
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Gemm specialization
 
   return steel_matmul(
+      /* const Stream& s = */ s,
+      /* metal::Device& d = */ d,
+      /* const array& a = */ a,
+      /* const array& b = */ b,
+      /* array& out = */ out,
+      /* int M = */ M,
+      /* int N = */ N,
+      /* int K = */ K,
+      /* int batch_size_out = */ batch_size_out,
+      /* int lda = */ a_cols,
+      /* int ldb = */ b_cols,
+      /* bool transpose_a = */ a_transposed,
+      /* bool transpose_b = */ b_transposed,
+      /* std::vector<array>& copies = */ copies,
+      /* Shape batch_shape = */ std::move(batch_shape),
+      /* Strides A_batch_stride = */ std::move(A_batch_stride),
+      /* Strides B_batch_stride = */ std::move(B_batch_stride));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// AddMM implementation
+///////////////////////////////////////////////////////////////////////////////
 
 void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 3);
@@ -1124,11 +1434,15 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& b_pre = inputs[1];
   auto& c_pre = inputs[2];
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Init checks and prep
 
   int M = a_pre.shape(-2);
   int N = b_pre.shape(-1);
   int K = a_pre.shape(-1);
 
+  // Keep a vector with copies to be cleared in the completed buffer to release
+  // the arrays
   std::vector<array> copies;
   auto [transpose_a, a_cols, a] = check_transpose(copies, s, a_pre, M == 1);
   auto [transpose_b, b_cols, b] = check_transpose(copies, s, b_pre, N == 1);
@@ -1138,6 +1452,8 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   int lda = a_cols;
   int ldb = b_cols;
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Check and collapse batch dimensions
   auto [batch_shape, A_batch_stride, B_batch_stride, C_batch_stride] =
       collapse_batches(a, b, c);
 
@@ -1158,16 +1474,65 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     batch_shape = {1};
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Gemv specialization
 
   // Route to gemv if needed
   if (std::min(M, N) == 1) {
     return gemv_axbpy(
+        /* const Stream& s = */ s,
+        /* metal::Device& d = */ d,
+        /* const array& a = */ a,
+        /* const array& b = */ b,
+        /* const array& c = */ c,
+        /* array& out = */ out,
+        /* int M = */ M,
+        /* int N = */ N,
+        /* int K = */ K,
+        /* int batch_size_out = */ batch_size_out,
+        /* int lda = */ lda,
+        /* int ldb = */ ldb,
+        /* bool transpose_a = */ transpose_a,
+        /* bool transpose_b = */ transpose_b,
+        /* std::vector<array>& copies = */ copies,
+        /* Shape batch_shape = */ batch_shape,
+        /* Strides A_batch_stride = */ A_batch_stride,
+        /* Strides B_batch_stride = */ B_batch_stride,
+        /* Strides C_batch_stride = */ C_batch_stride,
+        /* float alpha = */ alpha_,
+        /* float beta = */ beta_);
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Regular addmm dispatch
 
   return steel_matmul_axpby(
+      /* const Stream& s = */ s,
+      /* metal::Device& d = */ d,
+      /* const array& a = */ a,
+      /* const array& b = */ b,
+      /* const array& c = */ c,
+      /* array& out = */ out,
+      /* int M = */ M,
+      /* int N = */ N,
+      /* int K = */ K,
+      /* int batch_size_out = */ batch_size_out,
+      /* int lda = */ lda,
+      /* int ldb = */ ldb,
+      /* bool transpose_a = */ transpose_a,
+      /* bool transpose_b = */ transpose_b,
+      /* std::vector<array>& copies = */ copies,
+      /* Shape batch_shape = */ batch_shape,
+      /* Strides A_batch_stride = */ A_batch_stride,
+      /* Strides B_batch_stride = */ B_batch_stride,
+      /* Strides B_batch_stride = */ C_batch_stride,
+      /* float alpha = */ alpha_,
+      /* float beta = */ beta_);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// BlockMaskedMM implementation
+///////////////////////////////////////////////////////////////////////////////
 
 void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   using namespace mlx::steel;
@@ -1192,11 +1557,15 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   out.set_data(allocator::malloc(out.nbytes()));
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Init checks and prep
 
   int M = a_pre.shape(-2);
   int N = b_pre.shape(-1);
   int K = a_pre.shape(-1);
 
+  // Keep a vector with copies to be cleared in the completed buffer to release
+  // the arrays
   std::vector<array> copies;
   auto [transpose_a, a_cols, a] = check_transpose(copies, s, a_pre, M == 1);
   auto [transpose_b, b_cols, b] = check_transpose(copies, s, b_pre, N == 1);
@@ -1204,6 +1573,8 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   int lda = a_cols;
   int ldb = b_cols;
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Check and collapse batch dimensions
 
   bool has_op_mask = inputs.size() > 3;
   bool has_out_mask = inputs.size() == 3 || inputs.size() == 5;
@@ -1258,6 +1629,8 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   int64_t matrix_stride_out = static_cast<int64_t>(M) * N;
   size_t batch_size_out = out.size() / (matrix_stride_out);
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Gemv specialization
 
   // Route to gemv if needed
   if (std::min(M, N) == 1) {
@@ -1435,6 +1808,8 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Regular kernel dispatch
 
   // Determine dispatch kernel
   int bm = block_size_, bn = block_size_, bk = 16;
@@ -1478,6 +1853,19 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Prepare steel matmul params
   GEMMParams params{/* const int M = */ M,
+                    /* const int N = */ N,
+                    /* const int K = */ K,
+                    /* const int lda = */ lda,
+                    /* const int ldb = */ ldb,
+                    /* const int ldd = */ N,
+                    /* const int tiles_n = */ tn,
+                    /* const int tiles_m = */ tm,
+                    /* const int64_t batch_stride_a = */ A_batch_str,
+                    /* const int64_t batch_stride_b = */ B_batch_str,
+                    /* const int64_t batch_stride_d = */ matrix_stride_out,
+                    /* const int swizzle_log = */ swizzle_log,
+                    /* const int gemm_k_iterations_aligned = */ (K / bk),
+                    /* const int batch_ndim = */ int(batch_shape.size())};
 
   // Prepare launch grid params
   int tile = 1 << swizzle_log;
@@ -1528,6 +1916,9 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   compute_encoder.add_temporaries(std::move(copies));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// GatherMM implementation
+///////////////////////////////////////////////////////////////////////////////
 
 void gather_mm_rhs(
     const array& a_,
@@ -1540,6 +1931,9 @@ void gather_mm_rhs(
   auto [transpose_b, ldb, b] = ensure_batch_contiguous(b_, d, s);
 
   // Broadcast a with indices. If we are here that means lhs_indices were not
+  // provided so the lhs_indices are implied to be the shape of a broadcasted
+  // with rhs_indices. We need only broadcast a and copy it as if applying the
+  // lhs_indices.
   auto broadcast_with_indices = [&d, &s, &indices](const array& x) {
     if (x.size() / x.shape(-2) / x.shape(-1) == indices.size()) {
       return ensure_row_contiguous(x, d, s);
@@ -1630,6 +2024,20 @@ void gather_mm_rhs(
   // Prepare the matmul params
   auto batch_stride_b = b.ndim() > 2 ? b.strides()[b.ndim() - 3] : b.size();
   steel::GEMMParams params{
+      /* const int M = */ M,
+      /* const int N = */ N,
+      /* const int K = */ K,
+      /* const int lda = */ lda,
+      /* const int ldb = */ static_cast<int>(ldb),
+      /* const int ldd = */ N,
+      /* const int tiles_n = */ (N + bn - 1) / bn,
+      /* const int tiles_m = */ (M + bm - 1) / bm,
+      /* const int64_t batch_stride_a = */ 0,
+      /* const int64_t batch_stride_b = */ static_cast<int64_t>(batch_stride_b),
+      /* const int64_t batch_stride_d = */ 0,
+      /* const int swizzle_log = */ 0,
+      /* const int gemm_k_iterations_aligned = */ (K / bk),
+      /* const int batch_ndim = */ 0};
 
   // Prepare the grid
   MTL::Size group_dims = MTL::Size(32, wn, wm);
@@ -1656,6 +2064,9 @@ void gather_mm_rhs_nax(
   auto [transpose_b, ldb, b] = ensure_batch_contiguous(b_, d, s);
 
   // Broadcast a with indices. If we are here that means lhs_indices were not
+  // provided so the lhs_indices are implied to be the shape of a broadcasted
+  // with rhs_indices. We need only broadcast a and copy it as if applying the
+  // lhs_indices.
   auto broadcast_with_indices = [&d, &s, &indices](const array& x) {
     if (x.size() / x.shape(-2) / x.shape(-1) == indices.size()) {
       return ensure_row_contiguous(x, d, s);
@@ -1756,6 +2167,20 @@ void gather_mm_rhs_nax(
   // Prepare the matmul params
   auto batch_stride_b = b.ndim() > 2 ? b.strides()[b.ndim() - 3] : b.size();
   steel::GEMMParams params{
+      /* const int M = */ M,
+      /* const int N = */ N,
+      /* const int K = */ K,
+      /* const int lda = */ lda,
+      /* const int ldb = */ static_cast<int>(ldb),
+      /* const int ldd = */ N,
+      /* const int tiles_n = */ (N + bn - 1) / bn,
+      /* const int tiles_m = */ (M + bm - 1) / bm,
+      /* const int64_t batch_stride_a = */ 0,
+      /* const int64_t batch_stride_b = */ static_cast<int64_t>(batch_stride_b),
+      /* const int64_t batch_stride_d = */ 0,
+      /* const int swizzle_log = */ 0,
+      /* const int gemm_k_iterations_aligned = */ (K / bk),
+      /* const int batch_ndim = */ 0};
 
   // Prepare the grid
   MTL::Size group_dims = MTL::Size(32, wn, wm);
@@ -1791,6 +2216,9 @@ void gather_mv(
   auto [transpose_vec, vec_cols, vec] = check_transpose(copies, s, vec_, true);
   compute_encoder.add_temporaries(std::move(copies));
 
+  // If we are doing vector matrix instead of matrix vector we need to flip the
+  // matrix transposition. Basically m @ v = v @ m.T assuming that v is treated
+  // as a one dimensional array.
   transpose_mat = (!is_mv) ^ transpose_mat;
 
   // Define some shapes
@@ -1986,8 +2414,21 @@ void gather_mm(
 
   // Prepare the matmul params
   steel::GEMMParams params{/* const int M = */ M,
+                           /* const int N = */ N,
+                           /* const int K = */ K,
+                           /* const int lda = */ static_cast<int>(lda),
+                           /* const int ldb = */ static_cast<int>(ldb),
+                           /* const int ldd = */ N,
+                           /* const int tiles_n = */ (N + bn - 1) / bn,
+                           /* const int tiles_m = */ (M + bm - 1) / bm,
+                           /* const int64_t batch_stride_a = */
                            (batch_ndim > 0) ? lhs_indices.strides()[0] : 0,
+                           /* const int64_t batch_stride_b = */
                            (batch_ndim > 0) ? rhs_indices.strides()[0] : 0,
+                           /* const int64_t batch_stride_d = */ int64_t(M) * N,
+                           /* const int swizzle_log = */ 0,
+                           /* const int gemm_k_iterations_aligned = */ (K / bk),
+                           /* const int batch_ndim = */ batch_ndim};
 
   // Prepare the grid
   MTL::Size group_dims = MTL::Size(32, wn, wm);
@@ -2038,6 +2479,8 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   int N = b.shape(-1);
   int K = a.shape(-1);
 
+  // We are walking a in order and b is also in order so we can batch up the
+  // matmuls and reuse reading a and b.
   if (M == 1 && right_sorted_ == true) {
     if (metal::is_nax_available() &&
         (env::enable_tf32() || a.dtype() != float32)) {
@@ -2203,6 +2646,19 @@ void segmented_mm(
 
   // Prepare the matmul params
   steel::GEMMParams params{/* const int M = */ M,
+                           /* const int N = */ N,
+                           /* const int K = */ K,
+                           /* const int lda = */ static_cast<int>(lda),
+                           /* const int ldb = */ static_cast<int>(ldb),
+                           /* const int ldd = */ N,
+                           /* const int tiles_n = */ (N + bn - 1) / bn,
+                           /* const int tiles_m = */ (M + bm - 1) / bm,
+                           /* const int64_t batch_stride_a = */ 0,
+                           /* const int64_t batch_stride_b = */ 0,
+                           /* const int64_t batch_stride_d = */ int64_t(M) * N,
+                           /* const int swizzle_log = */ 0,
+                           /* const int gemm_k_iterations_aligned = */ 0,
+                           /* const int batch_ndim = */ 0};
 
   // Prepare the grid
   MTL::Size group_dims = MTL::Size(32, wn, wm);

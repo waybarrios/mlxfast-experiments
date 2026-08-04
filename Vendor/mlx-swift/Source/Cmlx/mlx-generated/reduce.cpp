@@ -6,6 +6,9 @@ const char* reduce() {
 
 // Auto generated source for mlx/backend/metal/kernels/reduce.h
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/reduction/reduce_all.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/reduction/reduce_all.h"
 // Copyright © 2023-2024 Apple Inc.
@@ -75,6 +78,9 @@ template <
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/reduction/reduce_col.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/reduction/reduce_col.h"
 // Copyright © 2023-2024 Apple Inc.
@@ -220,6 +226,17 @@ template <typename T, typename U, typename Op, typename IdxT, int NDIMS>
   }
 }
 
+/**
+ * Our approach is the following simple looped approach:
+ *  1. Each thread keeps running totals for BN / n_simdgroups outputs.
+ *  2. Load a tile BM, BN in registers and accumulate in the running totals
+ *  3. Move ahead by BM steps until the column axis and the non column
+ *     reductions are exhausted.
+ *  6. If BM == 32 then transpose in SM and simd reduce the running totals.
+ *     Otherwise write in shared memory and BN threads accumulate the running
+ *     totals with a loop.
+ *  7. Write them to the output
+ */
 template <
     typename T,
     typename U,
@@ -291,6 +308,9 @@ template <
     loop.next(BM, reduce_shape, reduce_strides);
   }
 
+  // We can use a simd reduction to accumulate across BM so each thread writes
+  // the partial output to SM and then each simdgroup does BN / n_simdgroups
+  // accumulations.
   if (BM == 32) {
     constexpr int n_outputs = BN / n_simdgroups;
     static_assert(
@@ -322,6 +342,9 @@ template <
     }
   }
 
+  // Each thread holds n_reads partial results. We write them all out to shared
+  // memory and threads with offset.y == 0 aggregate the columns and write the
+  // outputs.
   else {
     short x_block = offset.x / n_reads;
     for (int i = 0; i < n_reads; i++) {
@@ -430,6 +453,9 @@ template <
     loop.next(outer_blocks * BM, reduce_shape, reduce_strides);
   }
 
+  // We can use a simd reduction to accumulate across BM so each thread writes
+  // the partial output to SM and then each simdgroup does BN / n_simdgroups
+  // accumulations.
   for (int i = 0; i < n_reads; i++) {
     shared_vals[offset.y * BN + offset.x + i] = totals[i];
   }
@@ -456,6 +482,9 @@ template <
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/reduction/reduce_init.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/reduction/reduce_init.h"
 // Copyright © 2023-2024 Apple Inc.
@@ -467,12 +496,23 @@ template <typename T, typename Op>
   out[tid] = Op::init;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/reduction/reduce_row.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/reduction/reduce_row.h"
 // Copyright © 2023-2024 Apple Inc.
 
 // Row reduction utilities
+// - `per_thread_row_reduce` collaborative partial reduction in the threadgroup
+// - `threadgroup_reduce` collaborative reduction in the threadgroup such that
+//   lid.x == 0 holds the reduced value
+// - `thread_reduce` simple loop and reduce the row
 
+/**
+ * The thread group collaboratively reduces across the rows with bounds
+ * checking. In the end each thread holds a part of the reduction.
+ */
 template <
     typename T,
     typename U,
@@ -521,6 +561,9 @@ METAL_FUNC void per_thread_row_reduce(
   }
 }
 
+/**
+ * Consecutive rows in a contiguous array.
+ */
 template <
     typename T,
     typename U,
@@ -546,6 +589,9 @@ METAL_FUNC void per_thread_row_reduce(
       totals, inputs, blocks, extra, lsize_x, lid_x);
 }
 
+/**
+ * Consecutive rows in an arbitrarily ordered array.
+ */
 template <
     typename T,
     typename U,
@@ -574,6 +620,9 @@ METAL_FUNC void per_thread_row_reduce(
       totals, inputs, blocks, extra, lsize_x, lid_x);
 }
 
+/**
+ * Reduce within the threadgroup.
+ */
 template <
     typename T,
     typename U,
@@ -635,6 +684,13 @@ thread_reduce(thread U& total, const device T* row, int blocks, int extra) {
 }
 
 // Reduction kernels
+// - `row_reduce_small` depending on the non-row reductions and row size it
+//   either just loops over everything or a simd collaboratively reduces the
+//   non_row reductions. In the first case one thread is responsible for one
+//   output on the 2nd one simd is responsible for one output.
+// - `row_reduce_simple` simple contiguous row reduction
+// - `row_reduce_looped` simply loop and reduce each row for each non-row
+//   reduction. One threadgroup is responsible for one output.
 
 template <
     typename T,
@@ -682,6 +738,8 @@ template <
 
     out[out_idx] = total_val;
   } else {
+    // Collaboratively reduce over non_row_reductions in the simdgroup. Each
+    // thread reduces every 32nd row and then a simple simd reduce.
     IdxT out_idx = gid.y + gsize.y * IdxT(gid.z);
     in += elem_to_loc<IdxT>(out_idx, shape, strides, ndim);
 
@@ -780,6 +838,8 @@ template <
 
   IdxT out_idx = gid.y + gsize.y * IdxT(gid.z);
 
+  // lid.x * N_READS breaks the per_thread_row_reduce interface a bit. Maybe it
+  // needs a small refactor.
   in += elem_to_loc<IdxT>(out_idx, shape, strides, ndim) + lid.x * N_READS;
 
   LoopedElemToLoc<NDIMS, IdxT, (NDIMS > 2)> loop(reduce_ndim);
@@ -811,6 +871,9 @@ template <
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/reduce.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/reduce.h"
 

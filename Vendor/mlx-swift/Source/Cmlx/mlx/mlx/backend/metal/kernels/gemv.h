@@ -11,6 +11,9 @@
 
 using namespace metal;
 
+///////////////////////////////////////////////////////////////////////////////
+/// Matrix vector multiplication
+///////////////////////////////////////////////////////////////////////////////
 
 #define MLX_MTL_CONST static constant constexpr const
 
@@ -24,6 +27,12 @@ struct DefaultAccT<complex64_t> {
 };
 
 // Contiguous TN-element loader for the GEMV inner loop. The primary template
+// preserves the original scalar loads. The kAligned=true specializations for
+// 2-byte float types issue one 8-byte vector load and unpack IN ORDER, so the
+// values consumed by the accumulation loop -- and therefore every rounding
+// step -- are bit-identical to the scalar path. The host dispatches the
+// aligned variant ("gemv_al") only after verifying that both device pointers
+// are 8-byte aligned and the matrix leading dimension is a multiple of 4.
 template <typename T, typename U, int TN, bool kAligned>
 struct GEMVLoader {
   static METAL_FUNC void
@@ -90,6 +99,24 @@ struct GEMVKernel {
       "gemv block must have a width of 4, 8, 16, or 32");
 
   // - The matrix of size (M = out_vec_size, K = in_vec_size) is divided up
+  //   into blocks of (blockM, blockN) divided among threadgroups
+  // - Every thread works on a block of (TM, TN)
+  // - We assume each threadgroup has (threadsN, threadsM, 1) threads
+  //
+  // 1. A thread loads TN elements each from mat along TM rows
+  //    and the corresponding scalar from the vector
+  // 2. The thread then multiplies and adds to accumulate its local result for
+  //    the block
+  // 3. At the end, each thread has accumulated results over all blocks across
+  //    the rows. These are then summed up across the threadgroup
+  // 4. Each threadgroup writes its accumulated blockM outputs
+  //
+  // Edge case handling:
+  // - The threadgroup with the largest tid has blocks that exceed the matrix
+  //   * The blocks that start outside the matrix are never read (thread results
+  //     remain zero)
+  //   * The last thread that partially overlaps with the matrix is shifted
+  //     inwards such that the thread block fits exactly in the matrix
 
   MLX_MTL_CONST short tgp_mem_size = BN > 1 ? BN*(blockM + TM) : 0;
   MLX_MTL_CONST bool needs_tgp_reduction = BN > 1;
@@ -263,6 +290,9 @@ struct GEMVKernel {
   }
 };
 
+///////////////////////////////////////////////////////////////////////////////
+/// Vector matrix multiplication
+///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,
@@ -286,6 +316,23 @@ struct GEMVTKernel {
   static_assert(SM * SN == 32, "simdgroup can only have 32 threads");
 
   // - The matrix of size (M = in_vec_size, N = out_vec_size) is divided up
+  //   into blocks of (blockM, blockN) divided among threadgroups
+  // - Every thread works on a block of (TM, TN)
+  // - We assume each threadgroup has (threadsN, threadsM, 1) threads
+  //
+  // 1. A thread loads TN elements each from mat along TM contiguous rows
+  //    and the corresponding scalar from the vector
+  // 2. The thread then accumulates its local result for the block
+  // 3. At the end, each thread has accumulated results over all blocks across
+  //    the rows. These are then summed up across the threadgroup
+  // 4. Each threadgroup writes its accumulated BN * TN outputs
+  //
+  // Edge case handling:
+  // - The threadgroup with the largest tid has blocks that exceed the matrix
+  //   * The blocks that start outside the matrix are never read (thread results
+  //     remain zero)
+  //   * The last thread that partially overlaps with the matrix is shifted
+  //     inwards such that the thread block fits exactly in the matrix
 
   MLX_MTL_CONST short tgp_mem_size = BM > 1 ? BM*(blockN + TN) : 0;
   MLX_MTL_CONST bool needs_tgp_reduction = BM > 1;
@@ -342,6 +389,8 @@ struct GEMVTKernel {
 
       // Per thread accumulation main loop
       for (int i = 0; i < n_iter; ++i) {
+        // Adding a threadgroup_barrier improves performance slightly
+        // This is possibly it may help exploit cache better
         threadgroup_barrier(mem_flags::mem_none);
 
         MLX_MTL_PRAGMA_UNROLL
@@ -428,6 +477,9 @@ struct GEMVTKernel {
   }
 };
 
+///////////////////////////////////////////////////////////////////////////////
+/// Matrix vector multiplication kernel
+///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,
@@ -502,6 +554,9 @@ template <
 }
 
 // `gemv` twin whose only difference is the kAligned=true GEMVKernel: the
+// host dispatches it only when the matrix/vector device pointers are 8-byte
+// aligned and the leading dimension is a multiple of 4, so the vectorized
+// loader is valid. Per-row arithmetic order is unchanged (bit-exact).
 template <
     typename T,
     const int BM, /* Threadgroup rows (in simdgroups) */
@@ -664,6 +719,9 @@ template <
       simd_lid);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+/// Vector matrix multiplication kernel
+///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,

@@ -4,6 +4,9 @@
 
 using namespace mlx::steel;
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMM kernels
+///////////////////////////////////////////////////////////////////////////////
 
 constant bool align_Q [[function_constant(200)]];
 constant bool align_K [[function_constant(201)]];
@@ -126,11 +129,32 @@ template <
 
   // Prepare block loaders
   using QBlockLoader = BlockLoaderT<
+      /* typename T = */ T,
+      /* short BROWS = */ BQ,
+      /* short BCOLS = */ BD,
+      /* short kDstStrRow = */ LDQ_tgp,
+      /* short kDstStrCol = */ 1,
+      /* short reduction_dim = */ 1,
+      /* short tgp_size = */ WM * WN * 32>;
 
   // K is loaded in transposed
   using KBlockLoader = BlockLoaderT<
+      /* typename T = */ T,
+      /* short BROWS = */ BK,
+      /* short BCOLS = */ BD,
+      /* short kDstStrRow = */ 1,
+      /* short kDstStrCol = */ LDK_tgp,
+      /* short reduction_dim = */ 0,
+      /* short tgp_size = */ WM * WN * 32>;
 
   using VBlockLoader = BlockLoaderT<
+      /* typename T = */ T,
+      /* short BROWS = */ BK,
+      /* short BCOLS = */ BD,
+      /* short kDstStrRow = */ LDV_tgp,
+      /* short kDstStrCol = */ 1,
+      /* short reduction_dim = */ 0,
+      /* short tgp_size = */ WM * WN * 32>;
 
   QBlockLoader loader_q(
       Q, params->Q_strides[2], Qs, simd_group_id, simd_lane_id);

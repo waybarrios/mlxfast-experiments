@@ -3,6 +3,8 @@
 struct fp8_e4m3 {
   template <typename T>
   fp8_e4m3(T f) {
+    // From PyTorch
+    // https://github.com/pytorch/pytorch/blob/e3643e1e0e923f0fc063dfab6f45c956d568919d/c10/util/Float8_e4m3fn.h#L148
     uint32_t fp8_max = 543 << 21;
     uint32_t denorm_mask = 141 << 23;
     uint32_t f_bits = as_type<uint32_t>(static_cast<float>(f));

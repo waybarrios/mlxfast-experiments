@@ -1,7 +1,15 @@
 // Copyright © 2023-2024 Apple Inc.
 
 // Row reduction utilities
+// - `per_thread_row_reduce` collaborative partial reduction in the threadgroup
+// - `threadgroup_reduce` collaborative reduction in the threadgroup such that
+//   lid.x == 0 holds the reduced value
+// - `thread_reduce` simple loop and reduce the row
 
+/**
+ * The thread group collaboratively reduces across the rows with bounds
+ * checking. In the end each thread holds a part of the reduction.
+ */
 template <
     typename T,
     typename U,
@@ -50,6 +58,9 @@ METAL_FUNC void per_thread_row_reduce(
   }
 }
 
+/**
+ * Consecutive rows in a contiguous array.
+ */
 template <
     typename T,
     typename U,
@@ -75,6 +86,9 @@ METAL_FUNC void per_thread_row_reduce(
       totals, inputs, blocks, extra, lsize_x, lid_x);
 }
 
+/**
+ * Consecutive rows in an arbitrarily ordered array.
+ */
 template <
     typename T,
     typename U,
@@ -103,6 +117,9 @@ METAL_FUNC void per_thread_row_reduce(
       totals, inputs, blocks, extra, lsize_x, lid_x);
 }
 
+/**
+ * Reduce within the threadgroup.
+ */
 template <
     typename T,
     typename U,
@@ -164,6 +181,13 @@ thread_reduce(thread U& total, const device T* row, int blocks, int extra) {
 }
 
 // Reduction kernels
+// - `row_reduce_small` depending on the non-row reductions and row size it
+//   either just loops over everything or a simd collaboratively reduces the
+//   non_row reductions. In the first case one thread is responsible for one
+//   output on the 2nd one simd is responsible for one output.
+// - `row_reduce_simple` simple contiguous row reduction
+// - `row_reduce_looped` simply loop and reduce each row for each non-row
+//   reduction. One threadgroup is responsible for one output.
 
 template <
     typename T,
@@ -211,6 +235,8 @@ template <
 
     out[out_idx] = total_val;
   } else {
+    // Collaboratively reduce over non_row_reductions in the simdgroup. Each
+    // thread reduces every 32nd row and then a simple simd reduce.
     IdxT out_idx = gid.y + gsize.y * IdxT(gid.z);
     in += elem_to_loc<IdxT>(out_idx, shape, strides, ndim);
 
@@ -309,6 +335,8 @@ template <
 
   IdxT out_idx = gid.y + gsize.y * IdxT(gid.z);
 
+  // lid.x * N_READS breaks the per_thread_row_reduce interface a bit. Maybe it
+  // needs a small refactor.
   in += elem_to_loc<IdxT>(out_idx, shape, strides, ndim) + lid.x * N_READS;
 
   LoopedElemToLoc<NDIMS, IdxT, (NDIMS > 2)> loop(reduce_ndim);

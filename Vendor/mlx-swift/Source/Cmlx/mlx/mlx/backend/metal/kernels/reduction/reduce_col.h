@@ -141,6 +141,17 @@ template <typename T, typename U, typename Op, typename IdxT, int NDIMS>
   }
 }
 
+/**
+ * Our approach is the following simple looped approach:
+ *  1. Each thread keeps running totals for BN / n_simdgroups outputs.
+ *  2. Load a tile BM, BN in registers and accumulate in the running totals
+ *  3. Move ahead by BM steps until the column axis and the non column
+ *     reductions are exhausted.
+ *  6. If BM == 32 then transpose in SM and simd reduce the running totals.
+ *     Otherwise write in shared memory and BN threads accumulate the running
+ *     totals with a loop.
+ *  7. Write them to the output
+ */
 template <
     typename T,
     typename U,
@@ -212,6 +223,9 @@ template <
     loop.next(BM, reduce_shape, reduce_strides);
   }
 
+  // We can use a simd reduction to accumulate across BM so each thread writes
+  // the partial output to SM and then each simdgroup does BN / n_simdgroups
+  // accumulations.
   if (BM == 32) {
     constexpr int n_outputs = BN / n_simdgroups;
     static_assert(
@@ -243,6 +257,9 @@ template <
     }
   }
 
+  // Each thread holds n_reads partial results. We write them all out to shared
+  // memory and threads with offset.y == 0 aggregate the columns and write the
+  // outputs.
   else {
     short x_block = offset.x / n_reads;
     for (int i = 0; i < n_reads; i++) {
@@ -351,6 +368,9 @@ template <
     loop.next(outer_blocks * BM, reduce_shape, reduce_strides);
   }
 
+  // We can use a simd reduction to accumulate across BM so each thread writes
+  // the partial output to SM and then each simdgroup does BN / n_simdgroups
+  // accumulations.
   for (int i = 0; i < n_reads; i++) {
     shared_vals[offset.y * BN + offset.x + i] = totals[i];
   }

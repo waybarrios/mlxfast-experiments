@@ -73,6 +73,9 @@ template <
     k_start = segments[2 * tid.z];
     k_end = segments[2 * tid.z + 1];
   } else {
+    // We accept either contiguous (above) or weird strides where the beginning
+    // of the next one is the previous one. Basically the last two strides are
+    // both 1!
     k_start = segments[tid.z];
     k_end = segments[tid.z + 1];
   }

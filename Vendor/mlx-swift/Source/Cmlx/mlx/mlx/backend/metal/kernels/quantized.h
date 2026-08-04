@@ -858,6 +858,8 @@ METAL_FUNC void qmv_impl(
     return;
   }
 
+  // In this case we need to properly guard all our reads because there isn't
+  // even 1 tile in the matrix
   if (out_vec_size < (num_simdgroups * results_per_simdgroup)) {
     ws +=
         out_row * in_vec_size_w + simd_lid * packs_per_thread * bytes_per_pack;

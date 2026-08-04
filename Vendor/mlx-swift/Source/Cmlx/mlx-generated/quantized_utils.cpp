@@ -6,6 +6,9 @@ const char* quantized_utils() {
 
 // Auto generated source for mlx/backend/metal/kernels/quantized_utils.h
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/quantized_utils.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/quantized_utils.h"
 // Copyright © 2023-2024 Apple Inc.

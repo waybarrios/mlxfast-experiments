@@ -6,6 +6,9 @@ const char* gather_axis() {
 
 // Auto generated source for mlx/backend/metal/kernels/indexing/gather_axis.h
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/indexing/gather_axis.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/indexing/gather_axis.h"
 // Copyright © 2025 Apple Inc.

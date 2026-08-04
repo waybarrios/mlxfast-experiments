@@ -6,6 +6,9 @@ const char* steel_attention() {
 
 // Auto generated source for mlx/backend/metal/kernels/steel/attn/kernels/steel_attention.h
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/defines.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/defines.h"
 // Copyright © 2024 Apple Inc.
@@ -15,12 +18,18 @@ const char* steel_attention() {
 #define STEEL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
 #define STEEL_PRAGMA_NO_UNROLL _Pragma("clang loop unroll(disable)")
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/attn/loader.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/loader.h"
 // Copyright © 2024 Apple Inc.
 
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Loading helper
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -57,6 +66,7 @@ struct BlockLoader {
     uint8_t v[sizeof(T) * vec_size];
   };
 
+  /* Constructor */
   METAL_FUNC BlockLoader(
       const device T* src_,
       const int src_ld_,
@@ -71,6 +81,7 @@ struct BlockLoader {
         dst(dst_ + bi * dst_ld + bj),
         src(src_ + bi * src_ld + bj) {}
 
+  /* Apply operation to threadgroup without bound checking */
   template <typename UnaryOp>
   METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const {
     STEEL_PRAGMA_UNROLL
@@ -82,12 +93,16 @@ struct BlockLoader {
     }
   }
 
+  /* Load from device memory into threadgroup memory - without bound checking */
   METAL_FUNC void load_unsafe() const {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
+      *((threadgroup ReadVector*)(&dst[i * dst_ld])) =
+          *((const device ReadVector*)(&src[i * src_ld]));
     }
   }
 
+  /* Load from device memory into threadgroup memory - with bound checking */
   METAL_FUNC void load_safe(short2 src_tile_dim) const {
     src_tile_dim = src_tile_dim - short2(bj, bi);
 
@@ -135,6 +150,7 @@ struct BlockLoader {
     }
   }
 
+  /* Iteration helper */
   METAL_FUNC void next() {
     src += tile_stride;
   }
@@ -174,6 +190,7 @@ struct BlockLoaderT {
   threadgroup T* dst;
   const device T* src;
 
+  /* Constructor */
   METAL_FUNC BlockLoaderT(
       const device T* src_,
       const int src_ld_,
@@ -188,6 +205,7 @@ struct BlockLoaderT {
         dst(dst_ + bi * kDstStrRow + bj * kDstStrCol),
         src(src_ + bi * src_ld + bj) {}
 
+  /* Apply operation to threadgroup without bound checking */
   template <typename UnaryOp>
   METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const {
     STEEL_PRAGMA_UNROLL
@@ -200,6 +218,7 @@ struct BlockLoaderT {
     }
   }
 
+  /* Load from device memory into threadgroup memory - without bound checking */
   METAL_FUNC void load_unsafe() const {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
@@ -210,6 +229,7 @@ struct BlockLoaderT {
     }
   }
 
+  /* Load from device memory into threadgroup memory - with bound checking */
   METAL_FUNC void load_safe(short2 src_tile_dim) const {
     src_tile_dim = src_tile_dim - short2(bj, bi);
 
@@ -257,6 +277,7 @@ struct BlockLoaderT {
     }
   }
 
+  /* Iteration helper */
   METAL_FUNC void next() {
     src += tile_stride;
   }
@@ -265,6 +286,9 @@ struct BlockLoaderT {
 } // namespace steel
 } // namespace mlx
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/utils.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils.h"
 // Copyright © 2024 Apple Inc.
@@ -309,12 +333,18 @@ METAL_FUNC ulong3 elem_to_loc_broadcast(
   return ulong3(loc_a, loc_b, loc_c);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/attn/transforms.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/transforms.h"
 // Copyright © 2024 Apple Inc.
 
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Transforms and Epilogues
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -378,6 +408,9 @@ struct BlockSwizzle {
 } // namespace steel
 } // namespace mlx
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/utils/type_traits.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils/type_traits.h"
 // Copyright © 2024 Apple Inc.
@@ -435,6 +468,9 @@ using pointer_element_t = typename pointer_element<remove_cv_t<T>>::type;
 
 #pragma METAL internals : disable
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 // Copyright © 2024 Apple Inc.
@@ -447,6 +483,9 @@ using pointer_element_t = typename pointer_element<remove_cv_t<T>>::type;
 namespace mlx {
 namespace steel {
 
+///////////////////////////////////////////////////////////////////////////////
+// Integral constant with casting
+///////////////////////////////////////////////////////////////////////////////
 
 template <typename T, T v>
 struct integral_constant {
@@ -477,6 +516,9 @@ constexpr constant bool is_integral_v = is_integral<T>::value;
 template <int val>
 using Int = integral_constant<int, val>;
 
+///////////////////////////////////////////////////////////////////////////////
+// Binary Operators on Integral constants
+///////////////////////////////////////////////////////////////////////////////
 
 #define integral_const_binop(__op__, __operator__)          \
   template <typename T, T tv, typename U, U uv>             \
@@ -541,6 +583,9 @@ constexpr void const_for_loop(F f) {
 
 #undef integral_const_binop
 
+///////////////////////////////////////////////////////////////////////////////
+// Reduction operators
+///////////////////////////////////////////////////////////////////////////////
 
 template <typename T>
 METAL_FUNC constexpr T sum(T x) {
@@ -557,6 +602,9 @@ METAL_FUNC constexpr auto sum(T x, Us... us) {
 
 #pragma METAL internals : disable
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/attn/mma.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/mma.h"
 // Copyright © 2024 Apple Inc.
@@ -569,6 +617,9 @@ METAL_FUNC constexpr auto sum(T x, Us... us) {
 
 using namespace metal;
 
+///////////////////////////////////////////////////////////////////////////////
+// MMA helper
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -1063,6 +1114,7 @@ struct BlockMMA {
   short As_offset;
   short Bs_offset;
 
+  /* Constructor */
   METAL_FUNC BlockMMA(
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
       ushort simd_lane_id [[thread_index_in_simdgroup]]) {
@@ -1082,6 +1134,7 @@ struct BlockMMA {
     sn += tn;
   }
 
+  /* (BM, BK) X (BK, BN) multiply accumulate function */
   METAL_FUNC void mma(const threadgroup T* As, const threadgroup T* Bs) {
     // Adjust for simdgroup and thread location
     As += As_offset;
@@ -1108,6 +1161,7 @@ struct BlockMMA {
     }
   }
 
+  /* Store results from simdgroup_matrix results into device memory */
   METAL_FUNC void store_result(device U* D, const int ldd) {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
@@ -1139,6 +1193,7 @@ struct BlockMMA {
     Ctile.template store_safe<U, WM, WN>(D, ldd, dst_tile_dims);
   }
 
+  /* Apply epilogue */
   template <typename UnaryEpilogue>
   METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) {
     // Loop over all simdgroup tiles
@@ -1148,6 +1203,7 @@ struct BlockMMA {
     }
   }
 
+  /* Apply epilogue */
   template <typename BinaryEpilogue>
   METAL_FUNC void apply_epilogue(
       const device U* C,
@@ -1175,6 +1231,7 @@ struct BlockMMA {
     }
   }
 
+  /* Apply epilogue */
   template <typename BinaryEpilogue>
   METAL_FUNC void apply_epilogue_safe(
       const device U* C,
@@ -1219,6 +1276,7 @@ struct BlockMMA {
     }
   }
 
+  /* Store results from simdgroup_matrix results into device memory */
   METAL_FUNC void store_result(
       device U* D,
       const int ldd,
@@ -1296,11 +1354,17 @@ struct BlockMMA {
 } // namespace steel
 } // namespace mlx
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/attn/params.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/params.h"
 // Copyright © 2024 Apple Inc.
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Attn param classes
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -1339,11 +1403,17 @@ struct AttnMaskParams {
 } // namespace steel
 } // namespace mlx
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/gemm/params.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/gemm/params.h"
 // Copyright © 2024 Apple Inc.
 
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMM param classes
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -1403,6 +1473,9 @@ struct GEMMAddMMParams {
 } // namespace steel
 } // namespace mlx
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/attn/attn.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/attn.h"
 // Copyright © 2024 Apple Inc.
@@ -1411,6 +1484,9 @@ struct GEMMAddMMParams {
 
 using namespace metal;
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMM kernel class
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -1472,6 +1548,7 @@ struct GEMMKernel {
       AccumType,
       Epilogue>;
 
+  /* Main kernel function */
   template <bool M_aligned, bool N_aligned, bool K_aligned_>
   static METAL_FUNC void gemm_loop(
       threadgroup T* As [[threadgroup(0)]],
@@ -1533,6 +1610,7 @@ struct GEMMKernel {
     }
   }
 
+  /* Main kernel function */
   static METAL_FUNC void run(
       const device T* A [[buffer(0)]],
       const device T* B [[buffer(1)]],
@@ -1576,6 +1654,8 @@ struct GEMMKernel {
 
     int gemm_k_iterations = params->gemm_k_iterations_aligned;
 
+    ///////////////////////////////////////////////////////////////////////////////
+    // MNK aligned loop
     if (MN_aligned) {
       for (int k = 0; k < gemm_k_iterations; k++) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -1614,6 +1694,8 @@ struct GEMMKernel {
       return;
 
     }
+    ///////////////////////////////////////////////////////////////////////////////
+    // MN unaligned loop
     else { // Loop over K - unaligned case
       short tgp_bm = min(BM, params->M - c_row);
       short tgp_bn = min(BN, params->N - c_col);
@@ -1686,6 +1768,9 @@ struct GEMMKernel {
 } // namespace steel
 } // namespace mlx
 
+///////////////////////////////////////////////////////////////////////////////
+// Contents from "mlx/backend/metal/kernels/steel/attn/kernels/steel_attention.h"
+///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/kernels/steel_attention.h"
 // Copyright © 2024-25 Apple Inc.
@@ -1693,6 +1778,9 @@ struct GEMMKernel {
 
 using namespace mlx::steel;
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMM kernels
+///////////////////////////////////////////////////////////////////////////////
 
 constant bool align_Q [[function_constant(200)]];
 constant bool align_K [[function_constant(201)]];
@@ -1815,11 +1903,32 @@ template <
 
   // Prepare block loaders
   using QBlockLoader = BlockLoaderT<
+      /* typename T = */ T,
+      /* short BROWS = */ BQ,
+      /* short BCOLS = */ BD,
+      /* short kDstStrRow = */ LDQ_tgp,
+      /* short kDstStrCol = */ 1,
+      /* short reduction_dim = */ 1,
+      /* short tgp_size = */ WM * WN * 32>;
 
   // K is loaded in transposed
   using KBlockLoader = BlockLoaderT<
+      /* typename T = */ T,
+      /* short BROWS = */ BK,
+      /* short BCOLS = */ BD,
+      /* short kDstStrRow = */ 1,
+      /* short kDstStrCol = */ LDK_tgp,
+      /* short reduction_dim = */ 0,
+      /* short tgp_size = */ WM * WN * 32>;
 
   using VBlockLoader = BlockLoaderT<
+      /* typename T = */ T,
+      /* short BROWS = */ BK,
+      /* short BCOLS = */ BD,
+      /* short kDstStrRow = */ LDV_tgp,
+      /* short kDstStrCol = */ 1,
+      /* short reduction_dim = */ 0,
+      /* short tgp_size = */ WM * WN * 32>;
 
   QBlockLoader loader_q(
       Q, params->Q_strides[2], Qs, simd_group_id, simd_lane_id);

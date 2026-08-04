@@ -7,6 +7,9 @@
 
 using namespace metal;
 
+///////////////////////////////////////////////////////////////////////////////
+// Atomic utils
+///////////////////////////////////////////////////////////////////////////////
 
 #pragma METAL internals : enable
 template <typename T>
@@ -28,6 +31,9 @@ struct mlx_atomic<T, enable_if_t<is_metal_atomic<T>>> {
   atomic<T> val;
 };
 
+///////////////////////////////////////////////////////////////////////////////
+// Native metal atomics
+///////////////////////////////////////////////////////////////////////////////
 
 template <typename T, enable_if_t<is_metal_atomic<T>, bool> = true>
 METAL_FUNC T
@@ -90,6 +96,13 @@ METAL_FUNC void mlx_atomic_fetch_mul_explicit(
   while (!mlx_atomic_compare_exchange_weak_explicit(
       object, &expected, val * expected, offset)) {
     // Workaround: Metal's atomic_compare_exchange_weak_explicit<float> does
+    // not perform bitwise comparison as required by the C++ atomics spec.
+    // The compiler lowers the success check to `fcmp fast ueq` under
+    // no-nans-fp-math, which evaluates to false when either operand is NaN -
+    // even when the bit patterns are identical. With NaN in memory the CAS
+    // can never succeed, so the loop spins. Bail out instead: memory is
+    // already NaN and that is the correct reduction result regardless of
+    // this thread's update.
     if constexpr (metal::is_floating_point_v<T>) {
       if (isnan(expected)) {
         break;
@@ -142,6 +155,9 @@ METAL_FUNC void mlx_atomic_fetch_max_explicit<float>(
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Custom atomics
+///////////////////////////////////////////////////////////////////////////////
 
 namespace {
 

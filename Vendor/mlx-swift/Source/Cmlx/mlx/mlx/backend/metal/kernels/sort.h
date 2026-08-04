@@ -5,7 +5,12 @@
 
 using namespace metal;
 
+// Based on GPU merge sort algorithm at
+// https://github.com/NVIDIA/cccl/tree/main/cub/cub
 
+///////////////////////////////////////////////////////////////////////////////
+// Thread-level sort
+///////////////////////////////////////////////////////////////////////////////
 
 template <typename T>
 METAL_FUNC void thread_swap(thread T& a, thread T& b) {
@@ -78,6 +83,9 @@ struct ThreadSort {
   }
 };
 
+///////////////////////////////////////////////////////////////////////////////
+// Threadgroup-level sort
+///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename ValT,
@@ -190,6 +198,8 @@ struct BlockMergeSort {
       int sort_sz = N_PER_THREAD * merge_threads;
       int sort_st = N_PER_THREAD * merge_threads * merge_group;
 
+      // As = tgp_vals[A_st:A_ed] is sorted
+      // Bs = tgp_vals[B_st:B_ed] is sorted
       int A_st = sort_st;
       int A_ed = sort_st + sort_sz / 2;
       int B_st = sort_st + sort_sz / 2;
@@ -201,6 +211,9 @@ struct BlockMergeSort {
       int B_sz = B_ed - B_st;
 
       // Find a partition of merge elements
+      //  Ci = merge(As[partition:], Bs[sort_md - partition:])
+      //       of size N_PER_THREAD for each merge lane i
+      //  C = [Ci] is sorted
       int sort_md = N_PER_THREAD * merge_lane;
       int partition = merge_partition(As, Bs, A_sz, B_sz, sort_md);
 
@@ -230,6 +243,9 @@ struct BlockMergeSort {
   }
 };
 
+///////////////////////////////////////////////////////////////////////////////
+// Kernel sort
+///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,

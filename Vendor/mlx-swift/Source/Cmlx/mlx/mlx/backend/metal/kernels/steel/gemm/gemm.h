@@ -10,6 +10,9 @@
 
 using namespace metal;
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMM kernel class
+///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -71,6 +74,7 @@ struct GEMMKernel {
       AccumType,
       Epilogue>;
 
+  /* Main kernel function */
   template <bool M_aligned, bool N_aligned, bool K_aligned_>
   static METAL_FUNC void gemm_loop(
       threadgroup T* As [[threadgroup(0)]],
@@ -132,6 +136,7 @@ struct GEMMKernel {
     }
   }
 
+  /* Main kernel function */
   static METAL_FUNC void run(
       const device T* A [[buffer(0)]],
       const device T* B [[buffer(1)]],
@@ -175,6 +180,8 @@ struct GEMMKernel {
 
     int gemm_k_iterations = params->gemm_k_iterations_aligned;
 
+    ///////////////////////////////////////////////////////////////////////////////
+    // MNK aligned loop
     if (MN_aligned) {
       for (int k = 0; k < gemm_k_iterations; k++) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -213,6 +220,8 @@ struct GEMMKernel {
       return;
 
     }
+    ///////////////////////////////////////////////////////////////////////////////
+    // MN unaligned loop
     else { // Loop over K - unaligned case
       short tgp_bm = min(BM, params->M - c_row);
       short tgp_bn = min(BN, params->N - c_col);

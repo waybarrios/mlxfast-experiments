@@ -2,6 +2,9 @@
 
 using namespace mlx::steel;
 
+///////////////////////////////////////////////////////////////////////////////
+// GEMM kernels
+///////////////////////////////////////////////////////////////////////////////
 
 constant bool has_batch [[function_constant(10)]];
 
@@ -164,6 +167,8 @@ template <
   const TransformAxpby<AccumType, AccumType> epilogue_op_axpby(
       addmm_params->alpha, addmm_params->beta);
 
+  ///////////////////////////////////////////////////////////////////////////////
+  // MNK aligned loop
   if (align_M && align_N) {
     // Do gemm
     for (int k = 0; k < gemm_k_iterations; k++) {
@@ -199,6 +204,8 @@ template <
     return mma_op.store_result(D, params->ldd);
 
   }
+  ///////////////////////////////////////////////////////////////////////////////
+  // MN unaligned loop
   else { // Loop over K - unaligned case
     const int leftover_bk = 0;
 
