@@ -1,7 +1,9 @@
 import Foundation
 import MLX
+import MLXFast
 import MLXLMCommon
 import MLXNN
+@testable import MLXFastModel
 import Testing
 
 /// Micro-benchmark of the decode MoE SwiGLU kernels using synthetic tensors
