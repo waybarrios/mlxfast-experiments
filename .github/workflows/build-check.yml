@@ -32,3 +32,16 @@ jobs:
           fetch-depth: 0
       - name: Build debug
         run: swift build --force-resolved-versions -j 2
+
+  microbench:
+    name: Micro-benchmark kernels (Metal, synthetic tensors)
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run kernel micro-benchmarks
+        run: |
+          MLXFAST_RUN_MLX_RUNTIME_TESTS=1 swift test --force-resolved-versions -j 2 \
+            --filter LagunaMicroBenchmarkTests 2>&1 | tail -40
