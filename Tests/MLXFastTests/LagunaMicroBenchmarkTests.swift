@@ -6,16 +6,18 @@ import MLXNN
 @testable import MLXFastModel
 import Testing
 
-/// Micro-benchmark of the decode MoE SwiGLU kernels using synthetic tensors
-/// with the exact Laguna XS 2.1 shapes. Runs on real Metal hardware; guard
-/// with MLXFAST_RUN_MLX_RUNTIME_TESTS=1 like the other kernel tests.
-///
-/// Measures wall-clock GPU time (via mx.eval forcing materialization) for:
-///   1. Separated path: lagunaRoutedSwiGLUQMV + lagunaSharedSwiGLUQMV
-///   2. Merged path:    lagunaRoutedSharedSwiGLUQMV (one dispatch)
-/// Prints per-iteration ms for each so profiling the difference is trivial.
-@Test
-func profileDecodeSwiGLUMergedVsSeparatedWhenRuntimeTestsAreEnabled() {
+@Suite(.serialized)
+struct LagunaMicroBenchmarkTests {
+    /// Micro-benchmark of the decode MoE SwiGLU kernels using synthetic tensors
+    /// with the exact Laguna XS 2.1 shapes. Runs on real Metal hardware; guard
+    /// with MLXFAST_RUN_MLX_RUNTIME_TESTS=1 like the other kernel tests.
+    ///
+    /// Measures wall-clock GPU time (via mx.eval forcing materialization) for:
+    ///   1. Separated path: lagunaRoutedSwiGLUQMV + lagunaSharedSwiGLUQMV
+    ///   2. Merged path:    lagunaRoutedSharedSwiGLUQMV (one dispatch)
+    /// Prints per-iteration ms for each so profiling the difference is trivial.
+    @Test
+    func profileDecodeSwiGLUMergedVsSeparatedWhenRuntimeTestsAreEnabled() {
     guard ProcessInfo.processInfo.environment["MLXFAST_RUN_MLX_RUNTIME_TESTS"] == "1" else {
         return
     }
@@ -111,4 +113,5 @@ private func maxAbsDiff(_ a: MLXArray, _ b: MLXArray) -> Float {
     let diff = MLX.abs(a - b)
     eval(diff)
     return diff.asArray(Float.self).max() ?? .infinity
+}
 }
