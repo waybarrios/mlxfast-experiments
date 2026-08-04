@@ -81,6 +81,29 @@ let lagunaFusedRoutedSharedDownResidualEnabled =
 let lagunaFusedRoutedSwiGLUQMVEnabled =
     ProcessInfo.processInfo.environment["DARKBLOOM_FUSED_ROUTED_SWIGLU_QMV"] != "0"
 
+/// `DARKBLOOM_MERGED_ROUTED_SHARED_SWIGLU_QMV` (default ON; set "0" to
+/// disable): decode-only merge of the routed gate/up QMV + SwiGLU and the
+/// shared expert's gate/up QMV + SwiGLU into ONE dispatch. The routed fused
+/// bank walk (tile-major, expert-slot interleave, two rows per simdgroup)
+/// extends to a ninth stream that walks the shared expert's plain
+/// row-concatenated `[gate; up]` bank; the routed half is byte-for-byte
+/// `lagunaRoutedSwiGLUQMV`'s per-row arithmetic and the shared half
+/// `lagunaSharedSwiGLUQMV`'s, so every output row keeps its K-block order,
+/// 32-lane reduction, row-scale suffix, and SwiGLU/BF16 boundaries —
+/// bit-exact (class A) against the two separate dispatches it replaces,
+/// whichever scheduling twin the R1 flags currently select. The shared half
+/// is handed to the fused routed+shared down+residual kernel via
+/// `mergedSharedActivated`, removing the shared QMV dispatch (one per sparse
+/// layer, ~39 per decode step). Engages only when the fused routed AND fused
+/// routed+shared down+residual paths are enabled and the merged bank guards
+/// hold; otherwise the packed/plain routed arm and the separate shared
+/// dispatch run exactly as before. The routed half always uses the stock
+/// two-tensor scale walk, so while this flag is ON the packed side bank
+/// (`DARKBLOOM_PACKED_SCALES`) is bypassed on the merged path.
+let lagunaMergedRoutedSharedSwiGLUQMVEnabled =
+    ProcessInfo.processInfo.environment[
+        "DARKBLOOM_MERGED_ROUTED_SHARED_SWIGLU_QMV"] != "0"
+
 /// `DARKBLOOM_PACKED_SCALES` (default ON; set "0" to disable): decode-only
 let lagunaPackedScalesEnabled =
     ProcessInfo.processInfo.environment["DARKBLOOM_PACKED_SCALES"] != "0"
@@ -6330,6 +6353,192 @@ func lagunaRoutedSwiGLUQMVPackedTop8(
     )[0]
 }
 
+/// One-dispatch decode fusion of the routed and shared gate/up QMV + SwiGLU.
+/// `lagunaRoutedSwiGLUQMergedKernel` extends the routed kernel's tile-major
+/// walk (`expert_slot = group % 9`, `tile = group / 9`) with the shared
+/// expert's row-concatenated bank as the ninth stream. Routed rows keep the
+/// stock 32-row gate/up pair-tile remap and per-expert bank offsets; the
+/// shared row keeps `lagunaSharedSwiGLUQMVKernel`'s plain `[gate; up]` row
+/// mapping and its own bank. Per-row arithmetic is textually identical to
+/// the separate kernels (same K-block loop, same `simd_sum`, same suffix and
+/// SwiGLU/BF16 boundaries), so the two output halves are bit-exact (class A)
+/// against the two dispatches this kernel replaces.
+private let lagunaRoutedSharedSwiGLUQMergedKernel = MLXFast.metalKernel(
+    name: "laguna_routed_shared_nvfp4_swiglu_qmv_merged_bf16_v1",
+    inputNames: [
+        "input", "fused_weight", "fused_scales", "indices",
+        "shared_weight", "shared_scales",
+    ],
+    outputNames: ["activated", "shared_activated"],
+    source: """
+        constexpr uint input_width = 2048;
+        constexpr uint output_width = 512;
+        constexpr uint fused_width = 1024;
+        constexpr uint packed_row_bytes = 1024;
+        constexpr uint scale_row_bytes = 128;
+        constexpr uint packed_expert_bytes = fused_width * packed_row_bytes;
+        constexpr uint scale_expert_bytes = fused_width * scale_row_bytes;
+        constexpr uint block_width = 512;
+        constexpr uint values_per_lane = 16;
+        constexpr uint tiles_per_stream = 128;
+        constexpr uint routed_experts = 8;
+        constexpr uint merged_streams = 9;
+
+        // Tile-major order keeps one threadgroup per stream at the same tile,
+        // exactly as the routed kernel's walk, with the shared bank as the
+        // ninth stream so its latency overlaps the routed banks' across a
+        // scheduling wave.
+        uint group = threadgroup_position_in_grid.x;
+        uint expert_slot = group % merged_streams;
+        uint tile = group / merged_streams;
+        uint is_shared = expert_slot >= routed_experts;
+        uint expert = is_shared ? 0 : uint(indices[expert_slot]);
+        uint simd_group = simdgroup_index_in_threadgroup;
+        uint lane = thread_index_in_simdgroup;
+        uint first_row = tile * 4 + simd_group * 2;
+
+        const device uint8_t* stream_weight = is_shared
+            ? (const device uint8_t*)shared_weight
+            : (const device uint8_t*)fused_weight + expert * packed_expert_bytes;
+        const device uint8_t* stream_scales = is_shared
+            ? shared_scales
+            : fused_scales + expert * scale_expert_bytes;
+
+        thread float gate_result[2] = {0.0f, 0.0f};
+        thread float up_result[2] = {0.0f, 0.0f};
+        thread float input_values[values_per_lane];
+
+        for (uint block = 0; block < input_width; block += block_width) {
+            const device vec<bfloat, 4>* input_vectors =
+                (const device vec<bfloat, 4>*)(
+                    input + block + lane * values_per_lane);
+            for (uint i = 0; i < values_per_lane / 4; ++i) {
+                const vec<bfloat, 4> values = input_vectors[i];
+                input_values[4 * i] = values[0];
+                input_values[4 * i + 1] = values[1];
+                input_values[4 * i + 2] = values[2];
+                input_values[4 * i + 3] = values[3];
+            }
+
+            for (uint row = 0; row < 2; ++row) {
+                uint logical_row = first_row + row;
+                // Routed banks interleave 32 gate rows with their matching 32
+                // up rows; the shared bank is plain [gate; up] concatenated.
+                uint gate_row = is_shared
+                    ? logical_row
+                    : (logical_row / 32) * 64 + logical_row % 32;
+                uint up_row = is_shared ? gate_row + output_width : gate_row + 32;
+                const device uint8_t* gate_weight =
+                    stream_weight + gate_row * packed_row_bytes +
+                    block / 2 + lane * 8;
+                const device uint8_t* up_weight =
+                    stream_weight + up_row * packed_row_bytes +
+                    block / 2 + lane * 8;
+                const device uint8_t* gate_scale =
+                    stream_scales + gate_row * scale_row_bytes +
+                    block / 16 + lane;
+                const device uint8_t* up_scale =
+                    stream_scales + up_row * scale_row_bytes +
+                    block / 16 + lane;
+
+                gate_result[row] += laguna_nvfp4_qdot_16(
+                    gate_weight,
+                    input_values,
+                    laguna_nvfp4_scale(gate_scale[0]));
+                up_result[row] += laguna_nvfp4_qdot_16(
+                    up_weight,
+                    input_values,
+                    laguna_nvfp4_scale(up_scale[0]));
+            }
+        }
+
+        for (uint row = 0; row < 2; ++row) {
+            gate_result[row] = simd_sum(gate_result[row]);
+            up_result[row] = simd_sum(up_result[row]);
+            if (lane == 0) {
+                uint logical_row = first_row + row;
+                bfloat gate = bfloat(gate_result[row]\(lagunaNvfp4RowScaleSuffix));
+                bfloat up = bfloat(up_result[row]\(lagunaNvfp4RowScaleSuffix));
+                bfloat exp_abs = metal::exp(metal::abs(gate));
+                bfloat denominator = bfloat(1) + exp_abs;
+                bfloat y = bfloat(1) / denominator;
+                bfloat sigmoid = gate < bfloat(0) ? y : bfloat(1) - y;
+                bfloat silu = bfloat(gate * sigmoid);
+                bfloat product = bfloat(silu * up);
+                if (is_shared) {
+                    shared_activated[logical_row] = product;
+                } else {
+                    activated[expert_slot * output_width + logical_row] = product;
+                }
+            }
+        }
+        """,
+    header: lagunaSharedSwiGLUQMVHeader,
+    ensureRowContiguous: true
+)
+
+/// Dispatches the merged routed+shared gate/up QMV + SwiGLU kernel: one grid
+/// over the eight routed banks and the shared bank, emitting the routed
+/// activation `[1, 1, 8, 1, 512]` (identical to `lagunaRoutedSwiGLUQMV`'s)
+/// and the shared activation `[1, 1, 512]` (identical to
+/// `lagunaSharedSwiGLUQMV`'s) from the same dispatch.
+func lagunaRoutedSharedSwiGLUQMV(
+    _ input: MLXArray,
+    fusedWeight: MLXArray,
+    fusedScales: MLXArray,
+    indices: MLXArray,
+    sharedWeight: MLXArray,
+    sharedScales: MLXArray
+) -> (routedActivated: MLXArray, sharedActivated: MLXArray) {
+    precondition(input.dtype == .bfloat16)
+    precondition(input.shape == [1, 1, LagunaConstants.hiddenSize])
+    precondition(fusedWeight.dtype == .uint32)
+    precondition(
+        fusedWeight.shape == [
+            LagunaConstants.numExperts,
+            2 * LagunaConstants.moeIntermediateSize,
+            LagunaConstants.hiddenSize / 8,
+        ])
+    precondition(fusedScales.dtype == .uint8)
+    precondition(
+        fusedScales.shape == [
+            LagunaConstants.numExperts,
+            2 * LagunaConstants.moeIntermediateSize,
+            LagunaConstants.hiddenSize / 16,
+        ])
+    precondition(indices.dtype == .uint32)
+    precondition(indices.shape == [1, 1, LagunaConstants.numExpertsPerTok])
+    precondition(sharedWeight.dtype == .uint32)
+    precondition(
+        sharedWeight.shape == [
+            2 * LagunaConstants.sharedExpertIntermediateSize,
+            LagunaConstants.hiddenSize / 8,
+        ])
+    precondition(sharedScales.dtype == .uint8)
+    precondition(
+        sharedScales.shape == [
+            2 * LagunaConstants.sharedExpertIntermediateSize,
+            LagunaConstants.hiddenSize / 16,
+        ])
+
+    let outputs = lagunaRoutedSharedSwiGLUQMergedKernel(
+        [input, fusedWeight, fusedScales, indices, sharedWeight, sharedScales],
+        grid: (
+            (LagunaConstants.numExpertsPerTok + 1) * 128 * 64, 1, 1
+        ),
+        threadGroup: (64, 1, 1),
+        outputShapes: [
+            [
+                1, 1, LagunaConstants.numExpertsPerTok, 1,
+                LagunaConstants.moeIntermediateSize,
+            ],
+            [1, 1, LagunaConstants.sharedExpertIntermediateSize],
+        ],
+        outputDTypes: [.bfloat16, .bfloat16]
+    )
+    return (outputs[0], outputs[1])
+}
+
 private let lagunaRoutedDownReduceKernel = MLXFast.metalKernel(
     name: "laguna_routed_nvfp4_down_reduce_bf16_v1",
     inputNames: [
@@ -8459,8 +8668,46 @@ final class LagunaRuntimeSparseMoEBlock: Module, UnaryLayer {
             // DECODE-ONLY fused gate/up: replicate exactly SwitchGLU's
             let activated: MLXArray
             // Set when the routed and shared gate/up QMVs were issued as one
+            // merged dispatch below, so the shared half of that same dispatch
+            // is handed to the down projection instead of being issued again.
+            // Purely within this invocation; nothing survives it.
             var mergedSharedActivated: MLXArray?
-            if lagunaFusedRoutedSwiGLUQMVEnabled,
+            if lagunaMergedRoutedSharedSwiGLUQMVEnabled,
+                lagunaFusedRoutedSwiGLUQMVEnabled,
+                lagunaFusedRoutedSharedDownResidualEnabled,
+                x.dtype == .bfloat16,
+                x.shape == [1, 1, LagunaConstants.hiddenSize],
+                fusedWeight.dtype == .uint32,
+                fusedScales.dtype == .uint8,
+                inds.dtype == .uint32,
+                inds.shape == [1, 1, LagunaConstants.numExpertsPerTok],
+                _fusedRoutedGateUpSplit == LagunaConstants.moeIntermediateSize,
+                let sharedBanks = sharedExpert.fusedSharedBanks(x)
+            {
+                // DECODE-ONLY merged routed+shared gate/up: one dispatch walks
+                // the eight routed banks (tile-major, exactly
+                // `lagunaRoutedSwiGLUQMV`'s walk) plus the shared bank as a
+                // ninth stream (exactly `lagunaSharedSwiGLUQMV`'s walk). Per
+                // row, the K-block loop, 32-lane reduction, row-scale suffix,
+                // and SwiGLU/BF16 boundaries are byte-identical to the two
+                // separate kernels, so each output half is bit-exact (class A)
+                // against the separate dispatches it replaces; the shared half
+                // is consumed below by the fused routed+shared down+residual
+                // kernel instead of being re-issued per sparse layer. When
+                // this guard declines, the packed/plain routed arm and the
+                // separate shared dispatch run exactly as before.
+                lagunaTrace("routed+shared gate/up QMV + SwiGLU (merged dispatch)")
+                let merged = lagunaRoutedSharedSwiGLUQMV(
+                    x,
+                    fusedWeight: fusedWeight,
+                    fusedScales: fusedScales,
+                    indices: inds,
+                    sharedWeight: sharedBanks.gateUpWeight,
+                    sharedScales: sharedBanks.gateUpScales
+                )
+                activated = merged.routedActivated
+                mergedSharedActivated = merged.sharedActivated
+            } else if lagunaFusedRoutedSwiGLUQMVEnabled,
                 x.dtype == .bfloat16,
                 x.shape == [1, 1, LagunaConstants.hiddenSize],
                 fusedWeight.dtype == .uint32,
