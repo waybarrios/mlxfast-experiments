@@ -28,20 +28,20 @@ func profileDecodeSwiGLUMergedVsSeparatedWhenRuntimeTestsAreEnabled() {
     // Input: one token, hidden 2048, BF16.
     let input = MLXArray(
         Array(repeating: Float(0.01), count: hidden),
-        [1, 1, hidden], dtype: .bfloat16)
+        [1, 1, hidden]).asType(.bfloat16)
 
     // Routed fused [gate;up] weights: [256, 1024, 256] BF16 -> quantize NVFP4
     // group-16 -> (uint32 packed, uint8 scales).
     let routedBF16 = MLXArray(
         Array(repeating: Float(0.02), count: experts * 2 * moe * (hidden / 8)),
-        [experts, 2 * moe, hidden / 8], dtype: .bfloat16)
+        [experts, 2 * moe, hidden / 8]).asType(.bfloat16)
     let (routedCodes, routedScales, _) = quantized(
         routedBF16, groupSize: 16, bits: 4, mode: .nvfp4)
 
     // Shared fused [gate;up]: [1024, 256] BF16.
     let sharedBF16 = MLXArray(
         Array(repeating: Float(0.02), count: 2 * shared * (hidden / 8)),
-        [2 * shared, hidden / 8], dtype: .bfloat16)
+        [2 * shared, hidden / 8]).asType(.bfloat16)
     let (sharedCodes, sharedScales, _) = quantized(
         sharedBF16, groupSize: 16, bits: 4, mode: .nvfp4)
 
@@ -108,7 +108,7 @@ func profileDecodeSwiGLUMergedVsSeparatedWhenRuntimeTestsAreEnabled() {
 }
 
 private func maxAbsDiff(_ a: MLXArray, _ b: MLXArray) -> Float {
-    let diff = abs(a - b)
+    let diff = MLX.abs(a - b)
     eval(diff)
     return diff.asArray(Float.self).max() ?? .infinity
 }
