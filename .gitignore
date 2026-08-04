@@ -59,3 +59,4 @@ correctness_prompts/*gpqa_reference_cases*.json
 
 # Local-only working docs (not part of the benchmark)
 local-docs/
+mlxfast-challenge/
