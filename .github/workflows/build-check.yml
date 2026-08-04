@@ -2,7 +2,7 @@ name: build-check
 
 on:
   push:
-    branches: [main, "exp/**"]
+    branches: [main, "exp/**", "main-budget"]
   workflow_dispatch:
 
 jobs:
