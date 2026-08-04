@@ -3,14 +3,6 @@ import Foundation
 import MLXFastCore
 
 /// Frozen invariants of the pinned Poolside Laguna XS 2.1 NVFP4 target
-/// (`poolside/Laguna-XS-2.1-NVFP4-mlx`). They live here because
-/// `MLXFastCore` is trusted harness code outside the editable surface.
-///
-/// Laguna is a 256-expert MoE decoder: 40 layers, hidden 2048, GQA with 8 KV
-/// heads and head dim 128, mixed full-attention (48 query heads, YaRN partial
-/// RoPE) and sliding-window layers (64 query heads, plain RoPE, window 512),
-/// a dense MLP only at layer 0, and sigmoid top-8 routing with a shared
-/// expert on layers 1-39. The vocabulary head is untied.
 public enum LagunaConstants {
     public static let modelType = "laguna"
     public static let vocabSize = 100_352
@@ -32,13 +24,8 @@ public enum LagunaConstants {
     public static let moeIntermediateSize = 512
     public static let sharedExpertIntermediateSize = 512
     public static let moeRoutedScalingFactor = 2.5
-    /// `bos_token_id` from the pinned checkpoint config; used only for
-    /// prompt-independent warmup forwards (never for scored decoding).
     public static let bosTokenID = 2
     public static let eosTokenIDs = [2, 24]
-    /// The Poolside checkpoint keeps embeddings, attention, the dense layer,
-    /// routers, and lm_head in BF16. Only routed/shared expert projections are
-    /// NVFP4-packed, with one E4M3 scale per group of 16 values.
     public static let quantizationGroupSize = 16
     public static let quantizationBits = 4
     public static let quantizationMode = "nvfp4"
@@ -50,25 +37,16 @@ public enum LagunaConstants {
 }
 
 /// Attention layer type for a single Laguna decoder layer. Laguna alternates
-/// three sliding-window layers with one full-attention layer per block of
-/// four (`layer_types` in the source config), with per-type query head
-/// counts and RoPE parameters.
 public enum LagunaLayerType: String, Equatable {
     case sliding = "sliding_attention"
     case full = "full_attention"
 }
 
-/// MLP kind for a single decoder layer (`mlp_layer_types` in the source
-/// config): layer 0 is a dense gated-SiLU MLP, layers 1-39 are sparse MoE
-/// blocks (256 routed experts + 1 shared expert).
 public enum LagunaMLPType: String, Equatable {
     case dense
     case sparse
 }
 
-/// Attention output gating mode (`gating` in the source config). The pinned
-/// checkpoint uses per-head gating: `g_proj` produces one softplus gate per
-/// query head, broadcast across the head dimension.
 public enum LagunaGatingMode: Equatable {
     case disabled
     case perHead
@@ -79,13 +57,6 @@ public enum LagunaGatingMode: Equatable {
 }
 
 /// Per-attention-type RoPE parameters. Sliding layers use standard rotary
-/// embeddings over the full head dimension (theta 1e4); full-attention
-/// layers use YaRN (theta 5e5, factor 32, original context 8192, beta
-/// 64/1) over the first half of the head (`partial_rotary_factor` 0.5).
-///
-/// The YaRN fields are consulted only when `type == "yarn"`; they default to
-/// the pinned Laguna values so an omitted field never silently falls back to
-/// the different generic defaults inside `initializeRope`.
 public struct LagunaRopeSpec: Equatable {
     public let theta: Double
     public let type: String
@@ -95,12 +66,6 @@ public struct LagunaRopeSpec: Equatable {
     public let betaFast: Double
     public let betaSlow: Double
     /// Pinned from Poolside's public config for artifact validation only.
-    ///
-    /// mlx-swift-lm's `YarnRoPE` is the runtime authority: it intentionally
-    /// ignores Hugging Face's `attention_factor` spelling and derives its
-    /// query/key multiplier from `factor` and the vendored mscale defaults.
-    /// For factor 32 that multiplier is `1 + 0.1 * log(32)`, about 1.34657,
-    /// not the literal public metadata value 1.0.
     public let attentionFactor: Double?
 
     public init(
@@ -124,9 +89,6 @@ public struct LagunaRopeSpec: Equatable {
     }
 }
 
-/// Per-tensor quantization override. The intended Poolside checkpoint does
-/// not use these; retaining the parsed representation lets validation reject
-/// a checkpoint that tries to smuggle in a different per-layer contract.
 public struct LagunaQuantizationOverride: Equatable {
     public let groupSize: Int
     public let bits: Int
@@ -141,8 +103,6 @@ public struct LagunaQuantizationSpec: Equatable {
     public let groupSize: Int
     public let bits: Int
     public let mode: String
-    /// Keyed by the source tensor stem without the trailing `.weight`
-    /// (e.g. `model.layers.1.mlp.switch_mlp.gate_proj`).
     public let overrides: [String: LagunaQuantizationOverride]
 
     public init(
@@ -157,9 +117,6 @@ public struct LagunaQuantizationSpec: Equatable {
         self.overrides = overrides
     }
 
-    /// Expected quantization for a quantized tensor, resolved from the
-    /// per-tensor overrides with fallback to the global spec. `stem` is the
-    /// source tensor name without the trailing `.weight`.
     public func expected(forTensorStem stem: String) -> (groupSize: Int, bits: Int) {
         if let override = overrides[stem] {
             return (override.groupSize, override.bits)
@@ -169,10 +126,6 @@ public struct LagunaQuantizationSpec: Equatable {
 }
 
 /// Text-tower configuration for Poolside Laguna XS 2.1 (256-expert MoE,
-/// 4-bit). Parsed from the config.json in the transformed weights directory
-/// -- the transform controls this schema directly, so it mirrors the source
-/// Hugging Face config fields the runtime actually needs (the source config
-/// is flat; the empty `vision_config` object is ignored).
 public struct LagunaConfig: Equatable {
     public let modelType: String
     public let vocabSize: Int
@@ -180,8 +133,6 @@ public struct LagunaConfig: Equatable {
     /// Dense MLP intermediate size (used only by dense layers; layer 0).
     public let intermediateSize: Int
     public let numHiddenLayers: Int
-    /// Fallback query head count when `num_attention_heads_per_layer` is
-    /// absent for a layer. The pinned config always ships the per-layer list.
     public let numAttentionHeads: Int
     public let numAttentionHeadsPerLayer: [Int]
     public let numKeyValueHeads: Int
@@ -308,9 +259,6 @@ public struct LagunaConfig: Equatable {
     }
 
     /// Output feature count of a layer's attention gate projection
-    /// (`g_proj`): one gate per query head for per-head gating, one gate per
-    /// output element for per-element gating. Returns nil when gating is
-    /// disabled (no `g_proj` tensors exist).
     public func gateProjectionOutputDim(forLayer layerIndex: Int) -> Int? {
         let layerGating = gatingMode(forLayer: layerIndex)
         guard layerGating.enabled else { return nil }
@@ -703,9 +651,6 @@ public struct LagunaConfig: Equatable {
                 "Laguna \(label) partial_rotary_factor must rotate an even number of dimensions"
             )
         }
-        // The runtime only knows how to configure the two RoPE families the
-        // pinned checkpoint uses; anything else would silently pick up
-        // non-Laguna defaults inside the shared `initializeRope` factory.
         switch spec.type {
         case "default":
             break
@@ -821,8 +766,6 @@ private func lagunaLayerTypesField(
     _ key: String, root: [String: Any], layerCount: Int
 ) throws -> [LagunaLayerType] {
     guard let value = fieldValue(key, root: root) else {
-        // Default Laguna pattern: one full-attention layer, then three
-        // sliding-window layers, repeating (full layers at 0, 4, 8, ...).
         return (0..<layerCount).map { $0 % 4 == 0 ? LagunaLayerType.full : LagunaLayerType.sliding }
     }
     guard let rawValues = value as? [String] else {
@@ -851,9 +794,6 @@ private func lagunaMLPLayerTypesField(
             return type
         }
     }
-    // Fallback mirrors the vendored `LagunaConfiguration.isSparse(layer:)`
-    // derivation: `mlp_only_layers` entries are dense, every
-    // `decoder_sparse_step`-th remaining layer is sparse.
     let mlpOnlyLayers = try intArrayField("mlp_only_layers", root: root, defaultValue: [0])
     let decoderSparseStep = try intField("decoder_sparse_step", root: root, defaultValue: 1)
     let numExperts = try intField(

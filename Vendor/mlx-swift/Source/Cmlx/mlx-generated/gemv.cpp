@@ -6,9 +6,6 @@ const char* gemv() {
 
 // Auto generated source for mlx/backend/metal/kernels/gemv.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/bf16.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/bf16.h"
 // Copyright © 2023 Apple Inc.
@@ -27,41 +24,12 @@ inline bfloat16_t uint16_to_bfloat16(const uint16_t x) {
   return as_type<bfloat16_t>(x);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/bf16_math.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/bf16_math.h"
 // Copyright © 2023 Apple Inc.
 
 
-///////////////////////////////////////////////////////////////////////////////
-// Metal math for bfloat16
-///////////////////////////////////////////////////////////////////////////////
 
-/*
-
-Following the Metal Shading Language Specification (Metal 3.1)
-
-"bfloat is an extended itypeing point type that only allows implicit conversion
- to a type of greater itypeing point rank. While bfloat can be implicitly
- converted to itype, it cannot be implicitly converted to half, and neither
- itype nor half can be implicitly converted to bfloat."
-
-Further, as far as I can tell, the stdlib math/simd functions are not defined
-for bfloat and calling with an argument of type bfloat will result in that
-argument getting implicitly converted to itype which then returns an output
-that is (likely) a itype which cannot be implicitly converted into a bfloat
-
-This leads to situations where
-bfloat a = 5.0bf;
-bfloat b = metal::abs(a); // this will throw an error since abs return itype
-bfloat c = static_cast<bfloat>(metal::abs(a)); // this is fine
-
-For the moment, I will be adding overloaded instantiations of the math
-functions to accordingly automatically handle the casting
-
-*/
 
 #define instantiate_metal_math_funcs(itype, otype, ctype, mfast)               \
                                                                                \
@@ -286,9 +254,6 @@ instantiate_metal_math_funcs(
 
 } // namespace metal
 
-///////////////////////////////////////////////////////////////////////////////
-// Metal simd for bfloat16
-///////////////////////////////////////////////////////////////////////////////
 
 #define instantiate_metal_simd_comm_funcs(                                   \
     itype, otype, ctype, itype_to_ctype, ctype_to_otype)                     \
@@ -412,9 +377,6 @@ instantiate_metal_simd_reduction_funcs(bfloat16_t, bfloat16_t, float);
 
 } // namespace metal
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/complex.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/complex.h"
 // Copyright © 2023 Apple Inc.
@@ -590,9 +552,6 @@ constexpr complex64_t operator%(complex64_t a, complex64_t b) {
   return {real, imag};
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/defines.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/defines.h"
 // Copyright © 2023 Apple Inc.
@@ -612,16 +571,10 @@ static MTL_CONST constexpr int RMS_N_READS = 4;
 static MTL_CONST constexpr int RMS_LOOPED_LIMIT = 4096;
 
 // Instantiate a templated kernel.
-// Extra args are used as template parameters:
-// e.g. instantiate_kernel(binary_int, binary, a, b) ->
-// [[host_name(binary_int)]] [kernel] binary<a, b>
 #define instantiate_kernel(name, func, ...) \
   template [[host_name(                     \
       name)]] [[kernel]] decltype(func<__VA_ARGS__>) func<__VA_ARGS__>;
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/logging.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/logging.h"
 // Copyright © 2025 Apple Inc.
@@ -650,9 +603,6 @@ struct os_log {
 
 #endif
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/utils.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/utils.h"
 // Copyright © 2023-2024 Apple Inc.
@@ -663,17 +613,12 @@ struct os_log {
 
 typedef half float16_t;
 
-// Work per thread values for different types. The values here are expected to
-// match get_work_per_thread in mlx/backend/metal/utils.h
 template <typename U>
 struct WorkPerThread {
   static_assert(sizeof(U) <= 8, "Type too large");
   static constexpr int constant n = 8 / sizeof(U);
 };
 
-///////////////////////////////////////////////////////////////////////////////
-// Type limits utils
-///////////////////////////////////////////////////////////////////////////////
 
 template <typename U>
 struct Limits {
@@ -736,14 +681,9 @@ struct Limits<complex64_t> {
       -metal::numeric_limits<float>::infinity());
 };
 
-///////////////////////////////////////////////////////////////////////////////
-// Indexing utils
-///////////////////////////////////////////////////////////////////////////////
 
 #define MLX_MTL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
 
-///////////////////////////////////////////////////////////////////////////////
-// Single Array with generic dims
 
 template <typename IdxT = int64_t>
 METAL_FUNC IdxT elem_to_loc(
@@ -775,8 +715,6 @@ METAL_FUNC IdxT elem_to_loc(
   return loc;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Single Array with fixed N dims
 
 template <typename IdxT = int64_t>
 METAL_FUNC IdxT elem_to_loc_1(uint elem, constant const int64_t& stride) {
@@ -794,8 +732,6 @@ METAL_FUNC IdxT elem_to_loc_3(uint3 elem, constant const int64_t strides[3]) {
       elem.z * IdxT(strides[0]);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Multiple Arrays with generic dims
 
 template <typename IdxT = int64_t>
 METAL_FUNC vec<IdxT, 2> elem_to_loc_2_nd(
@@ -845,9 +781,6 @@ METAL_FUNC vec<IdxT, 3> elem_to_loc_3_nd(
   return loc;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Elem to loc in a loop utils
-///////////////////////////////////////////////////////////////////////////////
 
 template <int DIM, typename OffsetT = size_t, bool General = true>
 struct LoopedElemToLoc {
@@ -949,11 +882,7 @@ struct LoopedElemToLoc<1, OffsetT, false> {
   }
 };
 
-///////////////////////////////////////////////////////////////////////////////
-// Calculation utils
-///////////////////////////////////////////////////////////////////////////////
 
-/** Compute ceil((float)N/(float)M) */
 template <typename T, typename U>
 inline T ceildiv(T N, U M) {
   return (N + M - 1) / M;
@@ -1001,9 +930,6 @@ inline complex64_t log1p(complex64_t in) {
   }
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// SIMD shuffle ops
-///////////////////////////////////////////////////////////////////////////////
 
 inline uint64_t simd_shuffle_down(uint64_t data, uint16_t delta) {
   return as_type<uint64_t>(
@@ -1095,9 +1021,6 @@ struct ConditionalType<true, T, U> {
   using type = T;
 };
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/utils.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils.h"
 // Copyright © 2024 Apple Inc.
@@ -1142,9 +1065,6 @@ METAL_FUNC ulong3 elem_to_loc_broadcast(
   return ulong3(loc_a, loc_b, loc_c);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/gemv.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/gemv.h"
 // Copyright © 2023-2024 Apple Inc.
@@ -1157,9 +1077,6 @@ METAL_FUNC ulong3 elem_to_loc_broadcast(
 
 using namespace metal;
 
-///////////////////////////////////////////////////////////////////////////////
-/// Matrix vector multiplication
-///////////////////////////////////////////////////////////////////////////////
 
 #define MLX_MTL_CONST static constant constexpr const
 
@@ -1173,12 +1090,6 @@ struct DefaultAccT<complex64_t> {
 };
 
 // Contiguous TN-element loader for the GEMV inner loop. The primary template
-// preserves the original scalar loads. The kAligned=true specializations for
-// 2-byte float types issue one 8-byte vector load and unpack IN ORDER, so the
-// values consumed by the accumulation loop -- and therefore every rounding
-// step -- are bit-identical to the scalar path. The host dispatches the
-// aligned variant ("gemv_al") only after verifying that both device pointers
-// are 8-byte aligned and the matrix leading dimension is a multiple of 4.
 template <typename T, typename U, int TN, bool kAligned>
 struct GEMVLoader {
   static METAL_FUNC void
@@ -1245,24 +1156,6 @@ struct GEMVKernel {
       "gemv block must have a width of 4, 8, 16, or 32");
 
   // - The matrix of size (M = out_vec_size, K = in_vec_size) is divided up
-  //   into blocks of (blockM, blockN) divided among threadgroups
-  // - Every thread works on a block of (TM, TN)
-  // - We assume each threadgroup has (threadsN, threadsM, 1) threads
-  //
-  // 1. A thread loads TN elements each from mat along TM rows
-  //    and the corresponding scalar from the vector
-  // 2. The thread then multiplies and adds to accumulate its local result for
-  //    the block
-  // 3. At the end, each thread has accumulated results over all blocks across
-  //    the rows. These are then summed up across the threadgroup
-  // 4. Each threadgroup writes its accumulated blockM outputs
-  //
-  // Edge case handling:
-  // - The threadgroup with the largest tid has blocks that exceed the matrix
-  //   * The blocks that start outside the matrix are never read (thread results
-  //     remain zero)
-  //   * The last thread that partially overlaps with the matrix is shifted
-  //     inwards such that the thread block fits exactly in the matrix
 
   MLX_MTL_CONST short tgp_mem_size = BN > 1 ? BN*(blockM + TM) : 0;
   MLX_MTL_CONST bool needs_tgp_reduction = BN > 1;
@@ -1436,9 +1329,6 @@ struct GEMVKernel {
   }
 };
 
-///////////////////////////////////////////////////////////////////////////////
-/// Vector matrix multiplication
-///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,
@@ -1462,23 +1352,6 @@ struct GEMVTKernel {
   static_assert(SM * SN == 32, "simdgroup can only have 32 threads");
 
   // - The matrix of size (M = in_vec_size, N = out_vec_size) is divided up
-  //   into blocks of (blockM, blockN) divided among threadgroups
-  // - Every thread works on a block of (TM, TN)
-  // - We assume each threadgroup has (threadsN, threadsM, 1) threads
-  //
-  // 1. A thread loads TN elements each from mat along TM contiguous rows
-  //    and the corresponding scalar from the vector
-  // 2. The thread then accumulates its local result for the block
-  // 3. At the end, each thread has accumulated results over all blocks across
-  //    the rows. These are then summed up across the threadgroup
-  // 4. Each threadgroup writes its accumulated BN * TN outputs
-  //
-  // Edge case handling:
-  // - The threadgroup with the largest tid has blocks that exceed the matrix
-  //   * The blocks that start outside the matrix are never read (thread results
-  //     remain zero)
-  //   * The last thread that partially overlaps with the matrix is shifted
-  //     inwards such that the thread block fits exactly in the matrix
 
   MLX_MTL_CONST short tgp_mem_size = BM > 1 ? BM*(blockN + TN) : 0;
   MLX_MTL_CONST bool needs_tgp_reduction = BM > 1;
@@ -1535,8 +1408,6 @@ struct GEMVTKernel {
 
       // Per thread accumulation main loop
       for (int i = 0; i < n_iter; ++i) {
-        // Adding a threadgroup_barrier improves performance slightly
-        // This is possibly it may help exploit cache better
         threadgroup_barrier(mem_flags::mem_none);
 
         MLX_MTL_PRAGMA_UNROLL
@@ -1623,9 +1494,6 @@ struct GEMVTKernel {
   }
 };
 
-///////////////////////////////////////////////////////////////////////////////
-/// Matrix vector multiplication kernel
-///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,
@@ -1700,9 +1568,6 @@ template <
 }
 
 // `gemv` twin whose only difference is the kAligned=true GEMVKernel: the
-// host dispatches it only when the matrix/vector device pointers are 8-byte
-// aligned and the leading dimension is a multiple of 4, so the vectorized
-// loader is valid. Per-row arithmetic order is unchanged (bit-exact).
 template <
     typename T,
     const int BM, /* Threadgroup rows (in simdgroups) */
@@ -1865,9 +1730,6 @@ template <
       simd_lid);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-/// Vector matrix multiplication kernel
-///////////////////////////////////////////////////////////////////////////////
 
 template <
     typename T,

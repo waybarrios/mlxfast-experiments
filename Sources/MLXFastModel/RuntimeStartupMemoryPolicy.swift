@@ -2,36 +2,10 @@ import Darwin
 import MLX
 
 /// Selects a model-startup profile from the machine's physical-memory budget.
-///
-/// The profile is pure memory management: it never changes which code path
-/// executes or what the model produces. Machines below the 64 GiB
-/// full-profile minimum get a 6 GiB MLX allocator-cache cap, shorter
-/// command buffers, and a free-warmup-buffer clear before the worker
-/// protocol hello -- headroom insurance that lets the ~21.6 GB Poolside
-/// NVFP4 checkpoint run down to the documented 40 GiB local minimum.
-/// Compiled decode and every other ranked code path stay enabled on every
-/// machine, matching the ranked 128 GiB box.
-///
-/// `environmentOverrides` is deliberately empty in both profiles: a
-/// memory-gated feature-disable default makes small machines silently skip
-/// code paths the ranked box runs (the pre-2026-07 profile defaulted
-/// compiled decode off below 64 GiB this way, so local runs never executed
-/// the `compile(shapeless:)` decode closures the ranked M5 exercises). The
-/// no-overwrite plan machinery remains so any future override has to
-/// reintroduce it consciously, under test. The automatic selection can be
-/// overridden with `DARKBLOOM_STARTUP_MEMORY_PROFILE=full|low|auto`. When
-/// the low-memory profile engages it announces itself on stderr; a machine
-/// too small for the model plus the decode working set fails loudly with an
-/// out-of-memory error instead of silently diverging from the ranked
-/// behavior.
 public struct RuntimeStartupMemoryPolicy: Equatable, Sendable {
     public static let fullProfileMinimumPhysicalMemoryBytes = UInt64(64) << 30
 
     /// Environment name for the explicit profile override. It must keep the
-    /// `DARKBLOOM_` prefix: the trusted harness forwards only that
-    /// model-tuning family (plus MLX_/system prefixes) into the runtime
-    /// worker's sanitized environment, so any other spelling would never
-    /// reach the process that resolves the policy.
     public static let profileOverrideEnvironmentName =
         "DARKBLOOM_STARTUP_MEMORY_PROFILE"
 
@@ -74,24 +48,10 @@ public struct RuntimeStartupMemoryPolicy: Equatable, Sendable {
                 selectionReason: selectionReason,
                 cacheLimitBytes: 6 << 30,
                 // Half the full profile's referenced-byte and op budgets:
-                // shorter command buffers bound transient in-flight memory on
-                // machines whose allocator cache is also capped to match the
-                // trusted worker's 6 GiB phase-start value.
                 maxMegabytesPerCommandBuffer: 128,
                 maxOperationsPerCommandBuffer: 64,
                 clearAllocatorCacheAfterWarmup: true,
                 // No feature-disable defaults. Compiled decode
-                // (MLX_COMPILED_DECODE / DARKBLOOM_COMPILED_DECODE, both
-                // default-on in the vendored CompiledDecode/MLXHardwareInfo)
-                // was the only profile-touched setting that changed which
-                // code path executes; defaulting it off here made <64 GiB
-                // machines silently skip the compile(shapeless:) decode
-                // closures the ranked box runs. It captures the decode graph
-                // -- not a second model residency -- and the allocator cap
-                // above bounds its transient footprint, so it stays enabled
-                // for ranked parity. The cap, the command-buffer budgets,
-                // and the warmup clear are pure memory management with no
-                // effect on kernel selection or token output.
                 environmentOverrides: [:]
             )
         }
@@ -100,16 +60,8 @@ public struct RuntimeStartupMemoryPolicy: Equatable, Sendable {
             isLowMemory: false,
             selectionReason: selectionReason,
             // Ranked/full profile -- byte-identical to the constants this
-            // policy replaced. The 32 GiB soft allocator cap lets the M5 Max
-            // retain freed intermediates for reuse; it is not a reservation,
-            // and model weights stay active allocations outside it.
             cacheLimitBytes: 32 << 30,
             // The MLX M5 Max default commits a command buffer after
-            // referencing 50 MiB. Many 4-bit projections individually exceed
-            // that, so 320 MiB groups adjacent kernels without long command
-            // buffers; decode's explicit async-eval groups remain the outer
-            // command-buffer boundary, and this referenced-buffer budget
-            // governs within them.
             maxMegabytesPerCommandBuffer: 320,
             maxOperationsPerCommandBuffer: 128,
             clearAllocatorCacheAfterWarmup: false,
@@ -118,10 +70,6 @@ public struct RuntimeStartupMemoryPolicy: Equatable, Sendable {
     }
 
     /// The environment work `apply()` will perform, split into defaults to
-    /// install (name currently unset) and explicit user values to preserve,
-    /// plus the stderr notice lines describing the outcome. Pure given
-    /// `existingValue`, so tests can verify the no-overwrite semantics and
-    /// the notice without mutating process state.
     func environmentPlan(
         existingValue: (String) -> String?
     ) -> RuntimeStartupMemoryEnvironmentPlan {
@@ -168,9 +116,6 @@ public struct RuntimeStartupMemoryPolicy: Equatable, Sendable {
     }
 
     func apply() {
-        // Command-buffer budgets are per-profile absolutes (the pre-policy
-        // code force-set them identically); only the opt-in feature flags
-        // below use no-overwrite semantics.
         setenv(
             "MLX_MAX_MB_PER_BUFFER",
             String(maxMegabytesPerCommandBuffer),

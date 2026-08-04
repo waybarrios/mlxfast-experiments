@@ -28,15 +28,6 @@ template <typename T, int N_READS = RMS_N_READS>
   threadgroup float local_sums[SIMD_SIZE];
 
   // Laguna BF16 single-row 2048 specialization. The grid-width guard keeps
-  // the 512-row prefill launch on the generic path: one 2048-wide row is
-  // exactly 512 threads at RMS_N_READS=4, while prefill dispatches 512 of
-  // those threadgroups as a 262144-thread grid. The fixed row has sixteen
-  // simdgroup partials. Write those to slots 0...15 while lanes 16...31 of
-  // simdgroup zero initialize the disjoint unused slots, then rendezvous once.
-  // This produces the exact 32-lane second-reduction input of the generic
-  // path while removing its preceding zero-fill barrier. The square order,
-  // simd reductions, precise rsqrt, BF16 cast point, and weight multiply are
-  // unchanged.
   if constexpr (metal::is_same_v<T, bfloat16_t> && N_READS == 4) {
     if (axis_size == 2048 && grid_size == 512 && w_stride == 1) {
       constexpr uint laguna_simdgroups = 16;
@@ -84,11 +75,6 @@ template <typename T, int N_READS = RMS_N_READS>
   x += gid * size_t(axis_size) + lid * N_READS;
   w += w_stride * lid * N_READS;
   // Upstream ml-explore/mlx PR #3754: cache the row values read during the
-  // accumulation pass so the output pass does not re-read the same device
-  // bytes. Pure load elimination: the cached float is the exact bf16->float
-  // promotion the output expression performs anyway (T * float promotes T
-  // first), device memory is immutable during the dispatch, and every
-  // arithmetic op, its order, and all barriers are unchanged -- bit-exact.
   float xcache[N_READS];
   if (lid * N_READS + N_READS <= axis_size) {
     for (int i = 0; i < N_READS; i++) {

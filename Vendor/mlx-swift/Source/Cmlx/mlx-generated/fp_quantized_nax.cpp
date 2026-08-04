@@ -6,9 +6,6 @@ const char* fp_quantized_nax() {
 
 // Auto generated source for mlx/backend/metal/kernels/fp_quantized_nax.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/fp4.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/fp4.h"
 
@@ -59,17 +56,12 @@ struct fp4_e2m1 {
   uint8_t bits;
 };
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/fp8.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/fp8.h"
 
 struct fp8_e4m3 {
   template <typename T>
   fp8_e4m3(T f) {
-    // From PyTorch
-    // https://github.com/pytorch/pytorch/blob/e3643e1e0e923f0fc063dfab6f45c956d568919d/c10/util/Float8_e4m3fn.h#L148
     uint32_t fp8_max = 543 << 21;
     uint32_t denorm_mask = 141 << 23;
     uint32_t f_bits = as_type<uint32_t>(static_cast<float>(f));
@@ -144,9 +136,6 @@ struct fp8_e8m0 {
   uint8_t bits;
 };
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/fp_quantized_nax.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/fp_quantized_nax.h"
 // Copyright © 2025 Apple Inc.
@@ -158,15 +147,9 @@ struct fp8_e8m0 {
 constant bool align_M [[function_constant(200)]];
 constant bool align_N [[function_constant(201)]];
 constant bool align_K [[function_constant(202)]];
-// Set by gather_qmm_rhs_nax when DARKBLOOM_PREFILL_GATHER_RUNSKIP selects this
-// dispatch. Default OFF: the host always supplies it, and when false the kernel
-// is byte-for-byte the upstream algorithm.
 constant bool gather_run_skip [[function_constant(203)]];
 
 // DARKBLOOM staging levers for fp_gather_qmm_rhs_nax. All default OFF: an
-// undefined bool function constant reads as false, exactly as the kernel
-// behaves today. Each is resolved once per process on the host side, so no
-// tunable magnitude ever enters the pipeline specialization key.
 constant bool stage_widest [[function_constant(204)]];
 constant bool stage_wideld [[function_constant(205)]];
 constant bool stage_runbar [[function_constant(206)]];
@@ -232,61 +215,6 @@ inline void dequantize(uint8_t w, U scale, threadgroup U* w_local) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// NVFP4 block-loader staging fast path.
-//
-// Two bit-exact rewrites of the fp4 staging chain QuantizedBlockLoader runs
-// (the qmm / gather-qmm prefill kernels). Both rest on one observation about
-// `fp4_e2m1::operator float16_t()`:
-//
-//     half converted = as_type<half>(ushort((bits & 7) << 9));
-//     converted *= 16384.0;                        // 2^14
-//     return bits & 8 ? -converted : converted;
-//
-// The 3-bit magnitude field is *bit-embedded* into a half -- fp4's 2-bit
-// exponent lands in the low two bits of half's 5-bit exponent field and fp4's
-// single mantissa bit lands in half mantissa bit 9 -- so the reinterpreted
-// half is already the right number up to a fixed power of two: exactly
-// {0, .5, 1, 1.5, 2, 3, 4, 6} * 2^-14. The `* 16384.0` is a pure
-// renormalization, never a rounding step. (0.5 * 2^-14 == 2^-15 is a half
-// subnormal, and its bit pattern is precisely the one we started from, so
-// nothing rounds there either.)
-//
-// CHANGE 1 -- hoist the 2^14 out of the per-value converts into the one
-// per-group scale. The loader stores `scale * value`, so with
-//     s = the e4m3 group scale (at most 4 significant bits, |s| in
-//         [2^-9, 448] or NaN)
-//     m = an fp4 magnitude in {0, .5, 1, 1.5, 2, 3, 4, 6}
-// today's chain rounds `s * (m * 2^-14 * 2^14)` once and the folded chain
-// rounds `(s * 2^14) * (m * 2^-14)` once. Every factor is exact in binary FP:
-//   * s * 2^14 only shifts an exponent -- no rounding -- and can neither
-//     overflow (448 * 2^14 = 7340032, far inside float) nor underflow
-//     (2^-9 * 2^14 = 2^5),
-//   * m * 2^-14 is exactly representable in half, bfloat and float,
-//   * so both orderings are the SAME real number rounded once to the same
-//     destination type: identical bits.
-// The per-value multiply count drops from `n_reads * pack_factor` to one.
-// This is the loader-side sibling of the 2^22 fold `laguna_nvfp4_scale`
-// already carries in the decode custom kernels.
-//
-// Restricted to group_size == 16, the e4m3 (NVFP4) scale. mxfp4's e8m0 scales
-// (group_size 32) reach 2^127, where s * 2^14 would overflow to inf, so those
-// instantiations keep the original chain byte for byte.
-//
-// CHANGE 2 -- spread eight nibbles per uint32 instead of two per byte. The
-// byte-at-a-time chain costs AND + SHL + half multiply + AND + compare +
-// select per nibble plus a SHR per byte (~104 scalar ops per thread per
-// k-iteration at 16 values). The uint-at-a-time spread is four masked-
-// shift-OR groups, 19 integer ops per uint32, each producing a half2 whose
-// two lanes are two nibbles with the sign folded into the same OR. Ported
-// from `laguna_nvfp4_qdot_16` in the decode custom kernels. The half bit
-// patterns it builds are exactly the ones fp4_e2m1 builds one lane at a time,
-// so the staged values are unchanged.
-//
-// Verified by exhaustive GPU enumeration against the byte-at-a-time chain for
-// bfloat16_t, float16_t and float: all 256 scale bytes x all 256 packed
-// bytes, and all 256 scale bytes x all 65536 four-nibble codes -- 0 bit
-// mismatches out of 404,226,048 staged values.
-///////////////////////////////////////////////////////////////////////////////
 
 // Per-group NVFP4 scale with fp4's 2^14 renormalization folded in (Change 1).
 static inline float fp4nv_scale_x16384(uint8_t s) {
@@ -296,9 +224,6 @@ static inline float fp4nv_scale_x16384(uint8_t s) {
   return float(*(thread fp8_e4m3*)(&s)) * 16384.0f;
 }
 
-// Four packed bytes -> one uint32 in little-endian nibble order. Read through
-// packed_uchar4, whose alignment is 1, so widening the access adds no address
-// precondition the byte-at-a-time loop did not already satisfy.
 static inline uint32_t fp4nv_pack4(const device uint8_t* p) {
   return as_type<uint32_t>(uchar4(*(const device packed_uchar4*)p));
 }
@@ -307,14 +232,8 @@ static inline uint32_t fp4nv_pack4(const thread uint8_t* p) {
 }
 
 // Decode the eight fp4 nibbles packed in `c` and apply the folded scale
-// (Change 2). `out[k]` is nibble k -- byte k/2's low half for even k, high
-// half for odd k -- which is exactly the order `dequantize<U, 4>` produces
-// when walking those four bytes.
 template <typename T>
 static inline void fp4nv_decode8(uint32_t c, float scale, thread T* out) {
-  // Split-nibble decode: identical half bit patterns to stock with fewer
-  // integer ops and fewer live constant registers. See fp_quantized.cpp
-  // qdot() for the bit-exactness argument.
   const uint32_t xe = c & 0x0F0F0F0Fu;
   const uint32_t ge = xe | (xe << 3);
   const uint32_t yo = c & 0xF0F0F0F0u;
@@ -337,11 +256,6 @@ static inline void fp4nv_decode8(uint32_t c, float scale, thread T* out) {
 }
 
 // 16B-aligned chunk used to give the Ws staging buffer a guaranteed 16B base
-// address. Metal gives no alignas on a threadgroup array of scalars, and MSL
-// has no pointer-to-integer cast for threadgroup addresses, so the alignment
-// has to come from the element type. Declaring Ws as an array of these and
-// reinterpreting to Wtype* changes nothing about the buffer's size, element
-// count, layout, or contents -- it only pins the base address.
 template <typename T>
 struct alignas(16) NAXWsChunk16 {
   T v[16 / sizeof(T)];
@@ -406,16 +320,10 @@ struct QuantizedBlockLoader {
         scales(scales_ + bi * src_ld / group_size + group_id) {}
 
   // The NVFP4 staging fast path applies when the packing is one byte per two
-  // values, the scale is e4m3, and the byte run governed by ONE scale splits
-  // evenly into uint32s (so a uint32 never straddles a scale boundary). Every
-  // fp4 instantiation here qualifies: n_reads = 16 with n_reads_per_scale = 8.
-  // mxfp8 (bits 8) and mxfp4 (e8m0 scales) keep the original scalar chain.
   MLX_MTL_CONST bool fp4nv_fast = (bits == 4) && (group_size == 16) &&
       (bytes_per_pack == 1) && (n_reads_per_scale >= 4) &&
       ((n_reads_per_scale % 4) == 0);
 
-  // Stage this thread's n_reads packed bytes into `dst`. Identical values at
-  // identical addresses on both paths; see the note above dequantize().
   void stage() const {
     if constexpr (fp4nv_fast) {
       int k = 0;
@@ -452,34 +360,7 @@ struct QuantizedBlockLoader {
   }
 
   // DARKBLOOM_STAGE_WIDEST / DARKBLOOM_STAGE_WIDELD.
-  //
-  // BIT-EXACTNESS. This writes exactly the same values to exactly the same
-  // threadgroup addresses as load_unsafe(), decoded from exactly the same
-  // source bytes with exactly the same scale for every element. NO FLOAT
-  // ARITHMETIC IS TOUCHED AT ALL -- only the *width* of the device loads and
-  // the threadgroup stores changes. The per-element expression is character
-  // for character the one in dequantize<T, 4>:
-  //     scale * Dequantize<4, T>{}(byte)        (low nibble)
-  //     scale * Dequantize<4, T>{}(byte >> 4)   (high nibble)
-  // so this is a strictly stronger exactness class than a barrier removal:
-  // there is no reassociation, no accumulation-order change, and no rounding
-  // boundary anywhere in the diff.
-  //
-  // ALIGNMENT IS A CORRECTNESS PRECONDITION, NOT AN ASSUMPTION. A misaligned
-  // wide access is silent corruption, not a fault, so the preconditions are
-  // split between the two places that can actually see them:
-  //   * the HOST checks what only it knows -- the weight buffer's own byte
-  //     offset, the per-expert stride, and the tile column base (see
-  //     darkbloom_stage_wide_load_ok in quantized.cpp),
-  //   * this loader checks what only it knows -- each thread's own offset
-  //     within the tile, below, using integer arithmetic on the same
-  //     expressions the constructor used (no pointer-to-integer casts, which
-  //     MSL does not provide for threadgroup addresses).
-  // If any precondition fails the thread runs the untouched scalar path, so
-  // an unexpected shape degrades to today's code rather than corrupting.
 
-  // Elements per 16B threadgroup store, and how many such stores cover the
-  // 32 contiguous elements this thread owns.
   MLX_MTL_CONST short kWideElems = 16 / sizeof(T);
   MLX_MTL_CONST short kElemsPerThread = n_reads * pack_factor;
   MLX_MTL_CONST short kWideChunks = kElemsPerThread / kWideElems;
@@ -491,25 +372,16 @@ struct QuantizedBlockLoader {
   MLX_MTL_CONST bool kWidenShapeOk = (bits == 4) && (bytes_per_pack == 1) &&
       (kWideChunks >= 1) && (kWideChunks * kWideElems == kElemsPerThread) &&
       (kSrcBytesPerChunk * pack_factor == kWideElems) &&
-      // Every chunk must fall inside a single scale group, so that one scale
-      // covers it exactly as the scalar loop's `i` would.
       ((n_reads_per_scale % kSrcBytesPerChunk) == 0) &&
       (BCOLS_PACKED * BROWS >= tgp_size);
   // A single 16B device load covers this thread's whole source run.
   MLX_MTL_CONST bool kWideLoadShapeOk = kWidenShapeOk && (kSrcBytes == 16);
   // A single 8B device load covers it instead (the 256-thread expert-aligned
-  // geometry: n_reads 8, one packed byte each). Same exactness class as the
-  // 16B form -- the same bytes reach the same sb[] slots -- and the host
-  // certification for 16B bases is strictly stronger than the 8B one, so it
-  // is reused unchanged; only the per-thread offset check relaxes to 8B.
   MLX_MTL_CONST bool kWideLoad8ShapeOk = kWidenShapeOk && (kSrcBytes == 8);
 
   struct alignas(16) WideChunk {
     T v[kWideElems];
   };
-  // Sized by kSrcBytes rather than a literal 16 so the copy loop below stays
-  // in bounds for every instantiation, including the 8-bit ones where
-  // kSrcBytes is 32 and the wide-load path is statically disabled.
   struct alignas(16) WideSrc {
     uint8_t b[kSrcBytes];
   };
@@ -518,15 +390,10 @@ struct QuantizedBlockLoader {
   };
 
   // Byte offset of this thread's threadgroup destination, relative to the Ws
-  // base -- the same expression the constructor used for `dst`. Ws itself is
-  // 16B aligned by construction (see the NAXWsChunk16 backing store), so this
-  // offset alone decides whether a 16B store is legal.
   short dst_byte_off() const {
     return short((bi * dst_ld + bj * pack_factor) * sizeof(T));
   }
 
-  // Byte offset of this thread's device source, relative to the per-expert
-  // tile base the constructor was handed. The host certifies that base.
   int src_byte_off() const {
     return bi * src_ld * bytes_per_pack / pack_factor + bj * bytes_per_pack;
   }
@@ -556,9 +423,6 @@ struct QuantizedBlockLoader {
     }
 
     uint8_t sb[kSrcBytes];
-    // if constexpr: on instantiations where a single 16B load cannot cover
-    // this thread's source run the wide-load branch is not just unreachable,
-    // it is not emitted at all.
     bool took_wide_load = false;
     if constexpr (kWideLoadShapeOk) {
       if (load_ok) {
@@ -591,13 +455,7 @@ struct QuantizedBlockLoader {
     for (short c = 0; c < kWideChunks; c++) {
       const short e0 = c * kWideElems;
       const short k0 = c * kSrcBytesPerChunk;
-      // Same scale the scalar loop selects for every k in this chunk:
-      // i = k / n_reads_per_scale, constant across the chunk because
-      // kSrcBytesPerChunk divides n_reads_per_scale.
       WideChunk out;
-      // The NVFP4 spread needs 4 source bytes per call, so it is used only
-      // when a 16B chunk covers a whole multiple of them (kSrcBytesPerChunk
-      // is 4 for bfloat/half staging, 2 for float). Same values either way.
       if constexpr (fp4nv_fast && (kSrcBytesPerChunk % 4) == 0) {
         const float scale =
             fp4nv_scale_x16384(scales[k0 / n_reads_per_scale]);
@@ -626,15 +484,6 @@ struct QuantizedBlockLoader {
   }
 
   // DARKBLOOM_STAGE2_GATHER: register-staged twin of load_unsafe(), split in
-  // two so fp_gather_qmm_rhs_expert_nax can issue tile k+1's device fetch
-  // BEFORE the MMAs that consume tile k. fetch_stage2 reads exactly the bytes
-  // stage() reads -- this thread's n_reads packed bytes and its
-  // n_steps_per_read scale bytes -- into thread registers; store_stage2 then
-  // runs the identical decode chain (same expressions, same single rounding
-  // per element, same destination addresses) from those registers. Values and
-  // addresses are unchanged on every path; only WHEN the device reads issue
-  // moves. fp4nv_pack4 has a thread-space overload with identical
-  // little-endian assembly, so the fp4nv fast path stays bit-identical too.
 #ifdef DARKBLOOM_STAGE2_GATHER
   void fetch_stage2(
       thread uint8_t (&sb)[kSrcBytes],
@@ -935,9 +784,6 @@ METAL_FUNC void fp_qmm_n_impl(
   scales += y_col * K_g;
   y += y_row * static_cast<int64_t>(N) + y_col;
 
-  // Make the x loader and mma operation
-  // const short num_els = min(BM, M - y_row);
-  // const short num_outs = min(BN, N - y_col);
   loader_w_t loader_w(wl, scales, K, Ws, simd_gid, simd_lid);
 
   constexpr short SM = BM / WM;
@@ -1141,9 +987,6 @@ template <
 }
 
 // Laguna's shared-expert NVFP4 projections have two fixed matrix shapes.
-// Baking K/N and the M-alignment class into the JIT specialization removes
-// constant-buffer divisions, dynamic row strides, and the dead tail path
-// without changing any load, dequantization, MMA, or accumulation order.
 template <
     typename T,
     const int group_size,
@@ -1420,9 +1263,6 @@ template <
     const constant int& N,
     const constant int& K,
     // Magnitude dial for DARKBLOOM_PREFILL_GATHER_RUNSKIP, 1..100. A RUNTIME
-    // scalar, deliberately NOT a function constant: it must never participate
-    // in the pipeline specialization key, so one variant is compiled per
-    // process and no JIT compile can land inside a timed forward.
     const constant int& run_skip_pct,
     uint3 tid [[threadgroup_position_in_grid]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -1443,10 +1283,6 @@ template <
       bits>;
 
   // 16B-aligned backing store for Ws: identical element count, identical
-  // contents, identical relative addresses. DARKBLOOM_STAGE_WIDEST needs Ws
-  // itself 16B-aligned so that every thread's dst = Ws + bi*BK_padded +
-  // bj*pack_factor is too (BK_padded*sizeof == 144 and bj*pack_factor*sizeof
-  // in {0, 64} are all multiples of 16).
   constexpr int kWsElems = transpose ? BN * BK_padded : BK * BN_padded;
   constexpr int kWsPerChunk = 16 / sizeof(Wtype);
   threadgroup NAXWsChunk16<Wtype>
@@ -1523,40 +1359,11 @@ template <
       }
     }
     // DARKBLOOM_STAGE_RUNBAR: mem_none is an execution-only sync. Everything
-    // between it and the next mem_threadgroup barrier (Dtile.clear and the
-    // loader constructor) is register work, so that later barrier already
-    // orders every threadgroup access on both sides of this point.
     if (!stage_runbar) {
       threadgroup_barrier(mem_flags::mem_none);
     }
 
     // --- DARKBLOOM_PREFILL_GATHER_RUNSKIP (function constant 203) ---
-    // Rows this simdgroup owns are [tm, tm + sgp_sm) inside the tile; this run
-    // covers tile rows [offset, offset_next). The store below writes exactly
-    // rows [m_lo_lim, m_hi_lim) of this simdgroup's band, so when that range is
-    // empty every matmul performed for this run is dead work for this
-    // simdgroup -- store_slice's per-element guard already discards all of it.
-    //
-    // Exactness: this elides only arithmetic whose result is provably never
-    // written. Elements that ARE stored keep an identical accumulation order
-    // over an identical K sequence, so results are bit-for-bit unchanged. This
-    // holds for ANY value of run_skip_pct: the dial only chooses how many tiles
-    // take the elision, never what any surviving element computes.
-    //
-    // Magnitude dial: tile_enabled selects a deterministic subset of output
-    // row-tiles by tid.y, which is a grid coordinate -- it depends only on the
-    // dispatch geometry, never on token content or expert ids, so the elided
-    // set is identical for every prompt. Monotone in run_skip_pct by
-    // construction: the set {r : r*100 < pct} grows with pct, and pct>=100
-    // enables every tile.
-    //
-    // Barrier uniformity: offset/offset_next/tgp_bm are threadgroup-uniform, so
-    // the enclosing while-loop trip count is identical for every thread. tm and
-    // sgp_sm depend only on simd_group_id, and tile_enabled only on tid.y and a
-    // constant scalar, so sg_active is simdgroup-uniform. It gates ONLY
-    // per-simdgroup register work (Atile/Btile + tile_matmad) and the store;
-    // every threadgroup_barrier and the threadgroup-wide weight loader
-    // (load_unsafe / load_safe / next) stay unconditional below.
     const short m_lo_lim = min(int(sgp_sm), max(0, offset - tm));
     const short m_hi_lim = min(int(sgp_sm), max(0, offset_next - tm));
     const bool tile_enabled =
@@ -1585,8 +1392,6 @@ template <
         for (int k = 0; k < K_it; k++) {
           threadgroup_barrier(mem_flags::mem_threadgroup);
           if constexpr (kAlignedN.value) {
-            // Same bytes, same addresses, same nibble decode, same scale
-            // mapping -- only the access width changes. See load_unsafe_wide.
             if (stage_widest) {
               if (stage_wideld) {
                 loader_w.template load_unsafe_wide<true, true>();
@@ -1635,10 +1440,6 @@ template <
                   metal::bool_constant<transpose>{});
 
               // DARKBLOOM_STAGE_NOVOL: the volatile read forces a stack load
-              // and an optimization barrier on every inner step, which blocks
-              // software-pipelining the Atile load against the MMA. Dropping
-              // it touches no arithmetic and no memory the kernel reads or
-              // writes.
               if (!stage_novol) {
                 (void)compiler_barrier;
               }
@@ -1688,18 +1489,10 @@ template <
         }
 
         // DARKBLOOM_STAGE_RUNBAR: this barrier fences nothing. The only
-        // threadgroup array is Ws; the code between here and the next Ws
-        // access is Dtile.store*/store_slice, which reads registers and
-        // writes device memory. The write-after-read hazard against the next
-        // run's Ws stores is already covered by the mem_threadgroup barrier
-        // that immediately precedes those stores.
         if (!stage_runbar) {
           threadgroup_barrier(mem_flags::mem_threadgroup);
         }
 
-        // Store results to device memory. A skipped run stored nothing anyway
-        // (m_lo_lim >= m_hi_lim makes every store_slice range empty), so this
-        // guard removes work without changing any written element.
         if (sg_active) {
           if constexpr (kAlignedN.value) {
             if (m_lo_lim == 0 && m_hi_lim == SM) {
@@ -1742,15 +1535,6 @@ METAL_FUNC int laguna_sorted_lower_bound(
 }
 
 // Laguna prefill sorts the M routed rows by expert before this QMM. The stock
-// kernel assigns fixed 64-row tiles, then walks every expert run intersecting
-// a tile; a run crossing a tile boundary stages the same expert weight tile
-// again. This variant assigns four expert ids to each of 64 threadgroups.
-// Each expert's contiguous interval is found by two lower bounds, chunked only
-// when it genuinely exceeds BM, and therefore stages once per expert/chunk.
-//
-// Per-output arithmetic is unchanged: the same NAX fragment coordinates,
-// K_it/BK/SK traversal, BF16 weight staging boundary and tile_matmad sequence
-// are used. Only the rows grouped into a threadgroup change.
 template <
     typename T,
     int group_size,
@@ -1790,9 +1574,6 @@ template <
   constexpr int bytes_per_pack = get_bytes_per_pack();
   constexpr int BK_padded = BK + 16 / sizeof(Wtype);
   constexpr int BN_padded = BN + 16 / sizeof(Wtype);
-  // expert_groups comes from the template (grid y); the host certifies
-  // experts % expert_groups == 0 and sizes the grid to match, so each
-  // threadgroup owns exactly experts / expert_groups expert slots.
   constexpr int expert_groups = tg_expert_groups;
   constexpr int experts = 256;
   const int kernel_K = fixed_K > 0 ? fixed_K : K;
@@ -1816,10 +1597,6 @@ template <
   threadgroup Wtype* Ws = (threadgroup Wtype*)Ws_storage;
 #ifdef DARKBLOOM_STAGE2_GATHER
   // Stage-2 double buffering: a second staging region with identical
-  // geometry, ping-ponged with Ws across k-iterations so tile k+1 stages
-  // while the MMAs consume tile k. Doubles staging threadgroup memory
-  // (2 x BN x BK_padded x sizeof(Wtype) = 18,432 B at BN=BK=64/bfloat) --
-  // an occupancy trade, deliberately NOT a tile-geometry change.
   threadgroup NAXWsChunk16<Wtype>
       Ws2_storage[(kWsElems + kWsPerChunk - 1) / kWsPerChunk];
   threadgroup Wtype* Ws2 = (threadgroup Wtype*)Ws2_storage;
@@ -1839,10 +1616,6 @@ template <
   const size_t stride_s = size_t(kernel_N) * K_g;
 #ifdef DARKBLOOM_GATHER_XMAJOR
   // DARKBLOOM_GATHER_XMAJOR: one threadgroup owns kFoldCT ADJACENT column
-  // tiles of this expert's output (the dispatch site divides grid.x by the
-  // same value this kernel was compiled with). Takes precedence over
-  // DARKBLOOM_STAGE2_GATHER if both are ever set; the arms are meant to be
-  // exclusive.
   constexpr int kFoldCT = DARKBLOOM_GATHER_XMAJOR;
   static_assert(
       kFoldCT == 2 || kFoldCT == 4 || kFoldCT == 8 || kFoldCT == 16,
@@ -1868,23 +1641,11 @@ template <
 
 #ifdef DARKBLOOM_SWIGLU_REGLOCAL
   // DARKBLOOM_SWIGLU_REGLOCAL: compute the fused swiglu epilogue straight
-  // from the MMA Dtile fragments instead of round-tripping them through
-  // gate_up_stage. Only legal when one simdgroup owns the FULL BN-wide
-  // column band of its rows (WN == 1 -> SN == BN, tn == 0) at the shipped
-  // variant-5 geometry (BN = 64, SM = BM / WM = 16 -> TM = 1, TN = 4):
-  // then the gate column c and the up column c + 32 of the same output row
-  // live in the SAME LANE at the same element slot of Dtile fragments j
-  // and j + 2 (BaseNAXFrag layout: col = 16 * j + fn + jj, row = fm + 8 *
-  // i), so silu can be computed register-locally with zero cross-lane
-  // traffic. Every other geometry keeps the stock threadgroup-staged
-  // epilogue below unchanged.
   constexpr bool kSwigluRegLocal =
       (WN == 1) && (BN == 64) && ((BM / WM) == 16);
 #endif // DARKBLOOM_SWIGLU_REGLOCAL
 
 #ifdef DARKBLOOM_BSEARCH_HOIST
-  // Hoist: all slot bounds once, one lower_bound per thread (same integers
-  // as the per-slot lid==0 searches), one barrier instead of two per slot.
   for (int b = int(lid); b <= experts / expert_groups;
        b += WM * WN * SIMD_SIZE) {
     bounds[b] = laguna_sorted_lower_bound(
@@ -1897,8 +1658,6 @@ template <
 
   for (int expert_slot = 0; expert_slot < experts / expert_groups;
        ++expert_slot) {
-    // Keep each threadgroup's row intervals and expert weight regions
-    // contiguous across slots while preserving the exact expert bijection.
     const uint32_t expert =
         static_cast<uint32_t>(
             tid.y * (experts / expert_groups) + expert_slot);
@@ -1927,26 +1686,6 @@ template <
 
 #ifdef DARKBLOOM_GATHER_XMAJOR
       // The stock kernel computes ONE BN-wide column tile per threadgroup,
-      // so the 16 (gate/up) / 32 (down) column-tile threadgroups each
-      // re-stream this expert run's x rows from DRAM -- half the chain's
-      // DRAM bytes at ~625 GB/s (notes/exp-stage2.md section 4.3). Here the
-      // k-loop is OUTER and the column walk INNER: the A fragments for
-      // k-tile k are loaded from device once and reused across all kFoldCT
-      // weight tiles, so x device traffic divides by kFoldCT structurally.
-      // Weight traffic, staging geometry, and barrier count per staged tile
-      // are unchanged.
-      //
-      // EXACTNESS (class A, bit-exact): every output element still belongs
-      // to exactly one (threadgroup, ct) pair and is accumulated by the same
-      // simdgroup in the same order -- k ascending, kk1 ascending, the same
-      // tile_matmad_nax chain into its own dedicated Dtile accumulator --
-      // from the same Atile values (same addresses, same load/load_safe
-      // selection) and the same staged weight values (same loader geometry,
-      // based at column y_col + ct*BN and k-tile k, exactly the pointers a
-      // persistent stock loader holds after k next() calls). Only the
-      // assignment of column tiles to threadgroups and the interleaving
-      // across INDEPENDENT accumulators change; no float operation, no
-      // accumulation order, no rounding boundary moves.
       NAXTile<float, TM, TN> Dtile[kFoldCT];
       STEEL_PRAGMA_UNROLL
       for (int ct = 0; ct < kFoldCT; ++ct) {
@@ -1956,9 +1695,6 @@ template <
       const device T* xn =
           x + size_t(chunk_start + tm) * kernel_K;
 
-      // Per-k-tile advances of the loader's walk, spelled with the same
-      // expressions QuantizedBlockLoader uses (reduction_dim == 1 here):
-      // tile_stride = BCOLS_PACKED * bytes_per_pack, scales += n_groups.
       constexpr int kWTileBytes = (BK / pack_factor) * bytes_per_pack;
       constexpr int kSTileBytes = BK / group_size;
 
@@ -1979,9 +1715,6 @@ template <
         // Unrolled so Dtile[ct] indexing stays register-resident.
         STEEL_PRAGMA_UNROLL
         for (int ct = 0; ct < kFoldCT; ++ct) {
-          // Fresh loader per (ct, k): the constructor's pointer math plus
-          // these offsets is identical to a persistent per-ct loader after
-          // k next() calls.
           thread loader_w_t loader_w(
               wl + size_t(expert) * stride_w +
                   size_t(ct) * size_t(BN) * K_w +
@@ -2026,14 +1759,6 @@ template <
       if (fuse_swiglu) {
 #ifdef DARKBLOOM_SWIGLU_REGLOCAL
         // Register-local swiglu (geometry guard: kSwigluRegLocal above).
-        // EXACTNESS (class A, bit-exact): gate and up are the SAME float
-        // Dtile elements the stock path routes through gate_up_stage, cast
-        // to bfloat by the same static_cast the tile store performs; the
-        // swiglu chain replicates the stock expressions type-for-type in
-        // textual order and writes the same y address. Only the
-        // threadgroup round-trip and its two barriers per ct disappear.
-        // fp contract(off) pins the rounding boundaries: no FMA fusion may
-        // move the chain off the stock scalar sequence.
         if constexpr (kSwigluRegLocal) {
 #pragma clang fp contract(off)
           constexpr int activated_cols = BN / 2;
@@ -2101,9 +1826,6 @@ template <
                   bfloat(silu * up);
             }
           }
-          // Retires this ct's swiglu reads of gate_up_stage before the next
-          // ct's Dtile store overwrites it (stock pays the same barrier at
-          // the end of its swiglu).
           threadgroup_barrier(mem_flags::mem_threadgroup);
         }
 #ifdef DARKBLOOM_SWIGLU_REGLOCAL
@@ -2143,18 +1865,6 @@ template <
 
       for (int k = 0; k < K_it; ++k) {
         // Bit-exact A-operand hoist (the XMAJOR arm's shipped pattern at
-        // one-eighth its register cost): this iteration's x fragments load
-        // into registers BEFORE the two staging barriers, overlapping the
-        // sorted-x device reads with the weight staging they previously
-        // serialized behind. x is read-only, the A registers carry no
-        // dependence on Ws, both barriers remain, and the MMA chain
-        // (k ascending, kk1 ascending, same Dtile) is untouched, so every
-        // accumulation happens in the identical order on identical values.
-        // The partial-row arm uses load_rows: at this instantiation
-        // load_safe's column predicate is a tautology (widest touched
-        // column is 31 < SK), so bytes, addresses, and zero-fills are
-        // identical while the row predicate hoists out of the contiguous
-        // four-element runs and the Int<1> contiguous branch is restored.
         NAXTile<T, TM, TK> Atile[BK / SK];
         if (sg_active) {
           STEEL_PRAGMA_UNROLL
@@ -2168,13 +1878,6 @@ template <
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // DARKBLOOM_EXPERT_STAGE_WIDEST / DARKBLOOM_EXPERT_STAGE_WIDELD:
-        // same bytes, same addresses, same nibble decode, same scale mapping
-        // -- only the access widths change (16 scalar 2B threadgroup stores
-        // -> 2 16B stores per thread; 8 scalar 1B device loads -> 1 8B load
-        // per thread). See load_unsafe_wide. The store side needs no host
-        // certification (Ws is 16B aligned by construction); the load side
-        // is host-certified via darkbloom_stage_wide_load_ok and per-thread
-        // self-guarded, falling back to the scalar path on any misalignment.
         if constexpr (wide_store || wide_load) {
           loader_w.template load_unsafe_wide<wide_store, wide_load>();
         } else {
@@ -2205,24 +1908,6 @@ template <
       }
 #else
       // DARKBLOOM_STAGE2_GATHER: software-pipelined staging. The stock loop
-      // serializes every k-iteration as
-      //     barrier ; stage(k) ; barrier ; mma(k)
-      // so all 8 staging simdgroups idle during mma and the mma simdgroups
-      // idle during staging (at EG256 the mean expert run is ~16 rows, so
-      // usually only 2 of 8 simdgroups have MMA work). Here tile k+1's
-      // device fetch issues BEFORE the MMAs that consume tile k, its
-      // decode+threadgroup-store lands after them, and one joint barrier per
-      // iteration both publishes tile k+1 (RAW) and retires tile k's reads
-      // before that buffer is overwritten by tile k+2 (WAR).
-      //
-      // EXACTNESS (class A): the staged VALUES for every tile are produced
-      // by the identical decode chain from the identical device bytes to the
-      // identical addresses within a buffer (fetch_stage2/store_stage2 are
-      // textual twins of stage() with the source bytes passing through
-      // registers); the MMA consumption order -- k ascending, kk1 ascending,
-      // the same tile_matmad_nax chain into the same Dtile -- and every
-      // output's accumulation order are untouched. Only WHEN loads issue and
-      // WHICH of two identical-layout buffers holds odd tiles change.
       thread loader_w_t loader_even(
           wl + size_t(expert) * stride_w,
           scale_base + size_t(expert) * stride_s,
@@ -2239,9 +1924,6 @@ template <
           simd_lane_id);
       loader_odd.next();
 
-      // WAR: the previous chunk's reads of Ws retire before tile 0
-      // overwrites it (the stock loop pays this same barrier at the top of
-      // its first k-iteration).
       threadgroup_barrier(mem_flags::mem_threadgroup);
       loader_even.load_unsafe();
       loader_even.next();
@@ -2254,9 +1936,6 @@ template <
         const bool next_odd = ((k + 1) & 1) != 0;
         uint8_t sb[loader_w_t::kSrcBytes];
         uint8_t ss[loader_w_t::n_steps_per_read];
-        // Explicit parity branches rather than a loader pointer: with the
-        // static-shape K_it this loop fully unrolls, the parity is a
-        // constant per iteration, and both loaders stay register-resident.
         if (have_next) {
           if (next_odd) {
             loader_odd.fetch_stage2(sb, ss);
@@ -2304,9 +1983,6 @@ template <
         }
 
         xn += BK;
-        // Joint barrier: publishes tile k+1 for the next iteration's MMAs
-        // (RAW) and retires this iteration's reads of tile k before that
-        // buffer is overwritten (WAR).
         threadgroup_barrier(mem_flags::mem_threadgroup);
       }
 #endif // DARKBLOOM_STAGE2_GATHER
@@ -2317,9 +1993,6 @@ template <
       if (fuse_swiglu) {
 #ifdef DARKBLOOM_SWIGLU_REGLOCAL
         // Register-local swiglu, non-folded arm: identical mechanism and
-        // exactness argument as the DARKBLOOM_GATHER_XMAJOR site above,
-        // with the single Dtile and the stock per-threadgroup y column
-        // base.
         if constexpr (kSwigluRegLocal) {
 #pragma clang fp contract(off)
           constexpr int activated_cols = BN / 2;

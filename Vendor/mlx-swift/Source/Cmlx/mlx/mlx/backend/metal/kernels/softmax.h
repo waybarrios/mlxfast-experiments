@@ -2,8 +2,6 @@
 
 template <typename T>
 inline T softmax_exp(T x) {
-  // Softmax doesn't need high precision exponential cause x is gonna be in
-  // (-oo, 0] anyway and subsequently it will be divided by sum(exp(x_i)).
   return fast::exp(x);
 }
 
@@ -142,18 +140,11 @@ template <typename T, typename AccT = T, int N_READS = SOFTMAX_N_READS>
     }
   }
   // Now we got partial normalizer of N_READS * ceildiv(axis_size, N_READS *
-  // lsize) parts. We need to combine them.
-  //    1. We start by finding the max across simd groups
-  //    2. We then change the partial normalizers to account for a possible
-  //       change in max
-  //    3. We sum all normalizers
   prevmax = maxval;
   maxval = simd_max(maxval);
   normalizer *= softmax_exp(prevmax - maxval);
   normalizer = simd_sum(normalizer);
 
-  // Now the normalizer and max value is correct for each simdgroup. We write
-  // them shared memory and combine them.
   prevmax = maxval;
   if (simd_lane_id == 0) {
     local_max[simd_group_id] = maxval;
@@ -168,8 +159,6 @@ template <typename T, typename AccT = T, int N_READS = SOFTMAX_N_READS>
   normalizer = simd_sum(local_normalizer[simd_lane_id]);
   normalizer = 1 / normalizer;
 
-  // Finally given the normalizer and max value we can directly write the
-  // softmax output
   out += gid * size_t(axis_size);
   for (int r = 0; r < static_cast<int>(ceildiv(axis_size, N_READS * lsize));
        r++) {

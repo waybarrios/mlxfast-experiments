@@ -6,9 +6,6 @@ const char* steel_gemm_splitk_nax() {
 
 // Auto generated source for mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_splitk_nax.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_splitk_nax.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_splitk_nax.h"
 // Copyright © 2026 Apple Inc.
@@ -18,9 +15,6 @@ using namespace mlx::steel;
 constant bool align_M [[function_constant(200)]];
 constant bool align_N [[function_constant(201)]];
 
-///////////////////////////////////////////////////////////////////////////////
-// NAX Split-K GEMM kernel
-///////////////////////////////////////////////////////////////////////////////
 
 // clang-format off
 template <
@@ -112,8 +106,6 @@ template <
 
   NAXTile<AccumType, TM, TN> Dtile;
 
-  // gemm_loop through the partition
-  // Check K-alignment at runtime (partition-specific)
   const int partition_k_size = k_end - k_start;
   const int partition_k_iters = partition_k_size / BK;
   const bool partition_k_aligned = (partition_k_size % BK) == 0;

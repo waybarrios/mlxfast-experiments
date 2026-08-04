@@ -6,9 +6,6 @@ const char* ternary_ops() {
 
 // Auto generated source for mlx/backend/metal/kernels/ternary_ops.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/ternary_ops.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/ternary_ops.h"
 // Copyright © 2023-2024 Apple Inc.

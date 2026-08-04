@@ -82,25 +82,6 @@ template <typename U, int values_per_thread, int bits>
 inline U qdot(const device uint8_t* w, const thread U* x_thread, U scale) {
   if constexpr (bits == 4 && values_per_thread == 16) {
     // Specialized fp4 decode for the qmv_fast family (values_per_thread ==
-    // 16, e.g. nvfp4 gs=16 decode). Each 4-bit code n decodes through the
-    // same half bit pattern (magnitude (n & 7) << 9 with sign (n & 8) in
-    // the half sign bit) and the same exact half -> float conversion as the
-    // generic bits == 4 path below. Two further bit-exact ALU eliminations
-    // are applied on top of the split-nibble decode (see the JIT twin
-    // mlx-generated/fp_quantized.cpp for the full argument):
-    //
-    // (a) 2^14 renormalization fold: power-of-two scaling is exact at every
-    //     step, so moving the 2^14 from the eight decoded float2s onto the
-    //     one scale multiply -- (scale * 16384.0f) * accum -- leaves every
-    //     partial sum exactly 2^-14 times its old value and the single
-    //     final rounding lands on the identical result (the e4m3 scale
-    //     cannot overflow: |s| <= 448, so scale * 16384.0f <= 7.3e6).
-    //
-    // (b) Dead +0.0f accumulator-seed elision: +0.0f + t == t bitwise
-    //     except t == -0.0f, and that case leaves only a sign-of-zero
-    //     difference that every caller's +0.0f-seeded result cell absorbs
-    //     (+0.0f + -0.0f == +0.0f). The two packed-word bodies are emitted
-    //     textually, as the compiler was already fully unrolling them.
     const device uint2* wq = (const device uint2*)w;
     const uint2 codes = wq[0];
     U accum;
@@ -222,61 +203,6 @@ inline void dequantize(uint8_t w, U scale, threadgroup U* w_local) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// NVFP4 block-loader staging fast path.
-//
-// Two bit-exact rewrites of the fp4 staging chain QuantizedBlockLoader runs
-// (the qmm / gather-qmm prefill kernels). Both rest on one observation about
-// `fp4_e2m1::operator float16_t()`:
-//
-//     half converted = as_type<half>(ushort((bits & 7) << 9));
-//     converted *= 16384.0;                        // 2^14
-//     return bits & 8 ? -converted : converted;
-//
-// The 3-bit magnitude field is *bit-embedded* into a half -- fp4's 2-bit
-// exponent lands in the low two bits of half's 5-bit exponent field and fp4's
-// single mantissa bit lands in half mantissa bit 9 -- so the reinterpreted
-// half is already the right number up to a fixed power of two: exactly
-// {0, .5, 1, 1.5, 2, 3, 4, 6} * 2^-14. The `* 16384.0` is a pure
-// renormalization, never a rounding step. (0.5 * 2^-14 == 2^-15 is a half
-// subnormal, and its bit pattern is precisely the one we started from, so
-// nothing rounds there either.)
-//
-// CHANGE 1 -- hoist the 2^14 out of the per-value converts into the one
-// per-group scale. The loader stores `scale * value`, so with
-//     s = the e4m3 group scale (at most 4 significant bits, |s| in
-//         [2^-9, 448] or NaN)
-//     m = an fp4 magnitude in {0, .5, 1, 1.5, 2, 3, 4, 6}
-// today's chain rounds `s * (m * 2^-14 * 2^14)` once and the folded chain
-// rounds `(s * 2^14) * (m * 2^-14)` once. Every factor is exact in binary FP:
-//   * s * 2^14 only shifts an exponent -- no rounding -- and can neither
-//     overflow (448 * 2^14 = 7340032, far inside float) nor underflow
-//     (2^-9 * 2^14 = 2^5),
-//   * m * 2^-14 is exactly representable in half, bfloat and float,
-//   * so both orderings are the SAME real number rounded once to the same
-//     destination type: identical bits.
-// The per-value multiply count drops from `n_reads * pack_factor` to one.
-// This is the loader-side sibling of the 2^22 fold `laguna_nvfp4_scale`
-// already carries in the decode custom kernels.
-//
-// Restricted to group_size == 16, the e4m3 (NVFP4) scale. mxfp4's e8m0 scales
-// (group_size 32) reach 2^127, where s * 2^14 would overflow to inf, so those
-// instantiations keep the original chain byte for byte.
-//
-// CHANGE 2 -- spread eight nibbles per uint32 instead of two per byte. The
-// byte-at-a-time chain costs AND + SHL + half multiply + AND + compare +
-// select per nibble plus a SHR per byte (~104 scalar ops per thread per
-// k-iteration at 16 values). The uint-at-a-time spread is four masked-
-// shift-OR groups, 19 integer ops per uint32, each producing a half2 whose
-// two lanes are two nibbles with the sign folded into the same OR. Ported
-// from `laguna_nvfp4_qdot_16` in the decode custom kernels. The half bit
-// patterns it builds are exactly the ones fp4_e2m1 builds one lane at a time,
-// so the staged values are unchanged.
-//
-// Verified by exhaustive GPU enumeration against the byte-at-a-time chain for
-// bfloat16_t, float16_t and float: all 256 scale bytes x all 256 packed
-// bytes, and all 256 scale bytes x all 65536 four-nibble codes -- 0 bit
-// mismatches out of 404,226,048 staged values.
-///////////////////////////////////////////////////////////////////////////////
 
 // Per-group NVFP4 scale with fp4's 2^14 renormalization folded in (Change 1).
 static inline float fp4nv_scale_x16384(uint8_t s) {
@@ -286,9 +212,6 @@ static inline float fp4nv_scale_x16384(uint8_t s) {
   return float(*(thread fp8_e4m3*)(&s)) * 16384.0f;
 }
 
-// Four packed bytes -> one uint32 in little-endian nibble order. Read through
-// packed_uchar4, whose alignment is 1, so widening the access adds no address
-// precondition the byte-at-a-time loop did not already satisfy.
 static inline uint32_t fp4nv_pack4(const device uint8_t* p) {
   return as_type<uint32_t>(uchar4(*(const device packed_uchar4*)p));
 }
@@ -297,14 +220,8 @@ static inline uint32_t fp4nv_pack4(const thread uint8_t* p) {
 }
 
 // Decode the eight fp4 nibbles packed in `c` and apply the folded scale
-// (Change 2). `out[k]` is nibble k -- byte k/2's low half for even k, high
-// half for odd k -- which is exactly the order `dequantize<U, 4>` produces
-// when walking those four bytes.
 template <typename T>
 static inline void fp4nv_decode8(uint32_t c, float scale, thread T* out) {
-  // Split-nibble decode: identical half bit patterns to stock with fewer
-  // integer ops and fewer live constant registers. See qdot() for the
-  // bit-exactness argument.
   const uint32_t xe = c & 0x0F0F0F0Fu;
   const uint32_t ge = xe | (xe << 3);
   const uint32_t yo = c & 0xF0F0F0F0u;
@@ -385,15 +302,9 @@ struct QuantizedBlockLoader {
             (bj * pack_factor) / group_size) {}
 
   // The NVFP4 staging fast path applies when the packing is one byte per two
-  // values, the scale is e4m3, and this thread's run of source bytes splits
-  // evenly into uint32s. Every fp4 instantiation in this file qualifies
-  // (n_reads is 4 for qmm_t/qmm_n and 8 for gather_qmm_rhs); anything else --
-  // mxfp8 (bits 8), mxfp4 (e8m0 scales) -- keeps the original scalar chain.
   MLX_MTL_CONST bool fp4nv_fast = (bits == 4) && (group_size == 16) &&
       (bytes_per_pack == 1) && (n_reads >= 4) && ((n_reads % 4) == 0);
 
-  // Stage this thread's n_reads packed bytes into `dst`. Identical values at
-  // identical addresses on both paths; see the note above dequantize().
   void stage() const {
     if constexpr (fp4nv_fast) {
       const float scale = fp4nv_scale_x16384(*scales);
@@ -564,9 +475,6 @@ METAL_FUNC void fp_qmv_fast_impl(
 #if defined(__METAL_VERSION__) && (__METAL_VERSION__ >= 310)
     if constexpr (group_size == 16 && bits == 4) {
       // Same x elements into the same x_thread slots with the same
-      // per-element T -> U conversion as load_vector, using wider aligned
-      // loads (lane x offsets are multiples of values_per_thread == 16
-      // elements and rows of the fast kernel are multiples of 512 elements).
       const device vec<T, 4>* xv = (const device vec<T, 4>*)x;
 #pragma unroll
       for (int i = 0; i < values_per_thread / 4; i++) {
@@ -643,8 +551,6 @@ METAL_FUNC void fp_qmv_impl(
     return;
   }
 
-  // In this case we need to properly guard all our reads because there isn't
-  // even 1 tile in the matrix
   if (out_vec_size < (num_simdgroups * results_per_simdgroup)) {
     ws +=
         out_row * in_vec_size_w + simd_lid * packs_per_thread * bytes_per_pack;
@@ -1819,9 +1725,6 @@ template <
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   // Single-dispatch replay of the exact split-K arithmetic: per partition
-  // the SAME loader/MMA schedule as fp_qmm_t_impl, the partition store's
-  // T-round emulated in-register, partitions FP32-chained in the reduce's
-  // order, final store via the standard BlockMMA path (same output round).
   static_assert(BK >= SIMD_SIZE, "BK should be larger than SIMD_SIZE");
   static_assert(BK % SIMD_SIZE == 0, "BK should be divisible by SIMD_SIZE");
 
@@ -1884,8 +1787,6 @@ template <
     loader_w_t loader_w(wlp, scp, K, Ws, simd_gid, simd_lid);
     mma_t mma_op(simd_gid, simd_lid);
 
-    // Host guard requires M % BM == 0 and N % BN == 0 (and aligned_N), so
-    // only the all-aligned load path of fp_qmm_t_impl is replayed here.
     for (int k = 0; k < k_partition_size; k += BK) {
       threadgroup_barrier(mem_flags::mem_threadgroup);
       loader_x.load_unsafe();
@@ -1896,9 +1797,6 @@ template <
       loader_w.next();
     }
 
-    // Emulated partition store: T-round each accumulator element exactly as
-    // store_result's U-cast would have, then FP32-chain in partition order
-    // exactly as the strided reduce summed the old bf16 intermediate.
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kfrag; i++) {
       run_sum[i] += static_cast<float>(static_cast<T>(mma_op.Ctile.elems()[i]));

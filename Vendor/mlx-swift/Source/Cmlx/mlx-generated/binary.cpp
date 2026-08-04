@@ -6,9 +6,6 @@ const char* binary() {
 
 // Auto generated source for mlx/backend/metal/kernels/binary.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/binary.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/binary.h"
 // Copyright © 2024 Apple Inc.

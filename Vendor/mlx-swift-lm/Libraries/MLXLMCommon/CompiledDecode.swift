@@ -1,29 +1,4 @@
 // CompiledDecode: whole-step compiled decode helper.
-//
-// Ported (trimmed) from osaurus-ai/vmlx-swift-lm
-// (Libraries/MLXLMCommon/BatchEngine/BatchCompile.swift `compileForward`).
-//
-// This wraps MLX `compile(inputs:outputs:)` so a single decode step — the model
-// forward plus the per-layer KV-cache write — is captured as one compiled graph,
-// collapsing hundreds of FFI crossings into a single compiled call. The tracer
-// captures each cache layer's `innerState()`; subsequent invocations mutate the
-// captured cache objects in place via `_updateInternal`.
-//
-// REQUIREMENTS / CONSTRAINTS:
-// - Every layer must be a ``CompilableKVCache`` or ``CompilableRotatingKVCache``
-//   (fixed-shape, MLXArray offset). Standard `KVCacheSimple` / `RotatingKVCache`
-//   change state shape per step and cannot be compile-traced.
-// - Mixed caches (e.g. Gemma4: KVCacheSimple for full-attention layers,
-//   RotatingKVCache for sliding-window layers) are supported via per-layer
-//   promotion in `setupCompiledDecode`.
-// - The trace specialises on the token-batch shape it first sees (typically
-//   `[B, 1]`). A changing batch size forces a recompile, so the batched decode
-//   path needs fixed-size buckets (see the port plan for `GenerationBatch`).
-//
-// This helper is dependency-free w.r.t. the continuous-batching engine: it can
-// be exercised in isolation (see CompilableKVCacheTests) and reused by either a
-// single-stream or a batched decode loop once the cache-promotion + bucketing
-// plumbing lands.
 
 import Foundation
 import MLX
@@ -36,11 +11,6 @@ private let tieredCompiledAttentionEnabled =
 public enum CompiledDecode {
 
     /// Host-side selector between two compiled graphs over shared cache state.
-    ///
-    /// The fast graph attends to a short fixed prefix while the slow graph
-    /// exposes the whole backing buffer. Both cache arrays contain wrappers
-    /// around the same `MLXArray` objects, so switching graphs requires no KV
-    /// copy and no GPU offset readback.
     private final class TieredForward: @unchecked Sendable {
         let fastAttentionLength: Int
         var logicalOffset: Int
@@ -81,9 +51,6 @@ public enum CompiledDecode {
         }
     }
 
-    /// Compiled decode is ON by default. Set `DARKBLOOM_COMPILED_DECODE=0`
-    /// to disable. Guards in GenerationBatch ensure it only activates for
-    /// B=1 solo decode with supported cache types (no MTP, no SSM).
     public static let isEnabled: Bool = {
         if let raw = ProcessInfo.processInfo.environment["DARKBLOOM_COMPILED_DECODE"] {
             return !["0", "false", "no", "off"].contains(raw.lowercased())
@@ -92,9 +59,6 @@ public enum CompiledDecode {
     }()
 
     /// True iff every layer is a compilable cache type and thus
-    /// compile-traceable by ``compileForward(model:cacheRef:)``.
-    /// Accepts both single-stream (CompilableKVCache, CompilableRotatingKVCache)
-    /// and batched (CompilableBatchKVCache, CompilableBatchRotatingKVCache) types.
     public static func eligible(_ cache: [KVCache]) -> Bool {
         !cache.isEmpty && cache.allSatisfy {
             $0 is CompilableKVCache || $0 is CompilableRotatingKVCache
@@ -103,25 +67,6 @@ public enum CompiledDecode {
     }
 
     /// Build a compiled forward closure for a decode step.
-    ///
-    /// The returned closure accepts `[tokens]` (a single `[B, L]` int token
-    /// array wrapped in a one-element array) and returns `[logits]` (a single
-    /// `[B, L, V]` array). The captured cache layers are mutated in place.
-    ///
-    /// Supports mixed cache types: single-stream (``CompilableKVCache``,
-    /// ``CompilableRotatingKVCache``) and batched (``CompilableBatchKVCache``,
-    /// ``CompilableBatchRotatingKVCache``) all expose `innerState()` returning
-    /// MLXArrays tracked by `compile(inputs:outputs:)`.
-    ///
-    /// - Precondition: `cacheRef` is non-empty and every element is a
-    ///   compilable cache (see ``eligible(_:)``). Call `eval(cacheRef)`
-    ///   before this so no pending tracer ops corrupt state identity.
-    ///
-    /// - Parameters:
-    ///   - model: The language model to trace through.
-    ///   - cacheRef: Per-layer compilable cache instances. Captured by the
-    ///     returned closure; must not be empty.
-    /// - Returns: A `@Sendable` closure mapping `[tokens]` -> `[logits]`.
     public static func compileForward(
         model: any LanguageModel,
         cacheRef: [KVCache]
@@ -147,24 +92,6 @@ public enum CompiledDecode {
     }
 
     /// Attempt to set up compiled decode for a model + cache pair.
-    ///
-    /// This converts eligible cache layers to their compilable equivalents
-    /// and builds a compiled forward closure. Per-layer promotion handles
-    /// heterogeneous caches (e.g. Gemma4 with mixed KVCacheSimple +
-    /// RotatingKVCache layers).
-    ///
-    /// The conversion is only performed when ALL of these conditions hold:
-    /// - `DARKBLOOM_COMPILED_DECODE=1` env var is set
-    /// - `MLXHardwareInfo.isCompiledDecodeSupported` is true
-    /// - Every cache layer is either `KVCacheSimple` or `RotatingKVCache`
-    ///
-    /// - Parameters:
-    ///   - model: The language model.
-    ///   - cache: Mutable cache array. On success, entries are replaced with
-    ///     their compilable equivalents in place.
-    ///   - maxCacheLength: Maximum sequence length for the compiled cache buffers
-    ///     (applies to CompilableKVCache; RotatingKVCache uses its own maxCacheSize).
-    /// - Returns: A compiled forward closure, or `nil` if setup was skipped.
     public static func setupCompiledDecode(
         model: any LanguageModel,
         cache: inout [KVCache],
@@ -206,8 +133,6 @@ public enum CompiledDecode {
         var rotatingCount = 0
         for i in 0..<cache.count {
             if let rotating = cache[i] as? RotatingKVCache {
-                // RotatingKVCache → CompilableRotatingKVCache
-                // (uses its own maxCacheSize, not maxCacheLength)
                 cache[i] = CompilableRotatingKVCache.promote(from: rotating, maxLength: maxCacheLength)
                 rotatingCount += 1
             } else if let simple = cache[i] as? KVCacheSimple {
@@ -247,15 +172,6 @@ public enum CompiledDecode {
     }
 
     /// Choose the shortest attention view that preserves the long-cache
-    /// vector-SDPA reduction partition.
-    ///
-    /// Lengths above 1024 stay on MLX's two-pass vector SDPA on large M-series
-    /// devices. The first such length is exactly 1025: attention views share
-    /// the full backing allocation, so unlike cache storage they do not need
-    /// tranche alignment. This preserves the full buffer's block partition
-    /// for Laguna's six-way GQA on every MLX architecture category (`s`: 128
-    /// blocks, `d`: 128, other: 64) while scanning the shortest possible view.
-    /// This is a kernel boundary, not a benchmark prompt/token constant.
     static func initialAttentionLength(
         currentOffset: Int,
         growthStep: Int,
@@ -287,21 +203,6 @@ public enum CompiledDecode {
     }
 
     /// Set up compiled decode for batched caches (B >= 1).
-    ///
-    /// Promotes ``BatchKVCache`` layers to ``CompilableBatchKVCache`` and
-    /// ``BatchRotatingKVCache`` layers to ``CompilableBatchRotatingKVCache``
-    /// in place. Layers that are already compilable are kept as-is.
-    ///
-    /// ArraysCache / MambaCache layers are unsupported — if any are present,
-    /// setup is skipped and `nil` is returned.
-    ///
-    /// - Parameters:
-    ///   - model: The language model.
-    ///   - cache: Mutable batched-cache array. On success, entries are replaced
-    ///     with their compilable equivalents in place.
-    ///   - maxCacheLength: Maximum sequence length for full-attention layers.
-    ///     Sliding-window layers use their own maxCacheSize.
-    /// - Returns: A compiled forward closure, or `nil` if setup was skipped.
     public static func setupBatchCompiledDecode(
         model: any LanguageModel,
         cache: inout [any BatchedCache],

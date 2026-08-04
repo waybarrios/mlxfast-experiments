@@ -4,9 +4,6 @@
 
 #include "mlx/backend/metal/kernels/steel/defines.h"
 
-///////////////////////////////////////////////////////////////////////////////
-// Loading helper
-///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -43,7 +40,6 @@ struct BlockLoader {
     uint8_t v[sizeof(T) * vec_size];
   };
 
-  /* Constructor */
   METAL_FUNC BlockLoader(
       const device T* src_,
       const int src_ld_,
@@ -58,7 +54,6 @@ struct BlockLoader {
         dst(dst_ + bi * dst_ld + bj),
         src(src_ + bi * src_ld + bj) {}
 
-  /* Apply operation to threadgroup without bound checking */
   template <typename UnaryOp>
   METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const {
     STEEL_PRAGMA_UNROLL
@@ -70,16 +65,12 @@ struct BlockLoader {
     }
   }
 
-  /* Load from device memory into threadgroup memory - without bound checking */
   METAL_FUNC void load_unsafe() const {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
-      *((threadgroup ReadVector*)(&dst[i * dst_ld])) =
-          *((const device ReadVector*)(&src[i * src_ld]));
     }
   }
 
-  /* Load from device memory into threadgroup memory - with bound checking */
   METAL_FUNC void load_safe(short2 src_tile_dim) const {
     src_tile_dim = src_tile_dim - short2(bj, bi);
 
@@ -127,7 +118,6 @@ struct BlockLoader {
     }
   }
 
-  /* Iteration helper */
   METAL_FUNC void next() {
     src += tile_stride;
   }

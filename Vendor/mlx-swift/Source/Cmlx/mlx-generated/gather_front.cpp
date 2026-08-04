@@ -6,9 +6,6 @@ const char* gather_front() {
 
 // Auto generated source for mlx/backend/metal/kernels/indexing/gather_front.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/indexing/indexing.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/indexing/indexing.h"
 // Copyright © 2023-2024 Apple Inc.
@@ -34,9 +31,6 @@ METAL_FUNC size_t offset_neg_idx(IdxT idx, int size) {
   }
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/indexing/gather_front.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/indexing/gather_front.h"
 // Copyright © 2025 Apple Inc.

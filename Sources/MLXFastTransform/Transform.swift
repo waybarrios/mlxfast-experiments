@@ -40,59 +40,14 @@ public struct TransformReport: Equatable {
 }
 
 /// Model family of the source reference checkpoint, detected from its
-/// config.json. The transform supports the pinned Poolside Laguna XS 2.1
-/// MoE target (flat config with `model_type` "laguna", untied head) and the
-/// legacy Gemma 4 multimodal layout (nested `text_config`, tied head).
-///
-/// The legacy `.gemma4` family no longer has a runtime consumer (the Gemma 4
-/// runtime and its MTP track were removed); it is retained here deliberately
-/// as the only source-config family whose full transform pipeline (staging,
-/// atomic install, revalidation, verifier) can be exercised end to end with
-/// small synthetic fixtures -- the Laguna family requires the exact pinned
-/// 912-tensor inventory with real shapes.
 enum TransformModelFamily: Equatable {
     case gemma4
     case laguna
 }
 
 /// Offline transform for the pinned reference checkpoint: selects ONLY the
-/// text-tower tensors (`model.*` / `lm_head.*` for Poolside Laguna;
-/// `language_model.*` for legacy Gemma), drops every vision/audio/
-/// multimodal-projector tensor, and rewrites the
-/// selected tensors into dense safetensors shard(s) plus a
-/// `model.safetensors.index.json` and a runtime-authored `config.json`.
-///
-/// Two source checkpoint families are supported, detected from the source
-/// config.json:
-///
-/// - Poolside Laguna XS 2.1 NVFP4 (flat config, `model_type` "laguna"): the
-///   ranked serial-track target. The source is already MLX NVFP4-quantized,
-///   so the transform validates and passes through -- byte-for-byte, source
-///   tensor names unchanged -- the BF16/NVFP4 tensor set described by
-///   `docs/laguna-weight-contract.md`: attention
-///   q/k/v/o projections plus the per-head `g_proj` gates and q/k norms,
-///   the layer-0 dense MLP, the SwitchGLU-STACKED `mlp.switch_mlp.*` NVFP4
-///   expert tensors (leading experts axis; never split per expert), the raw
-///   BF16 `mlp.gate.weight` routers with their F32 correction vectors, the
-///   NVFP4 shared experts, and the untied BF16 `lm_head`. The
-///   contract forbids derived metadata sidecars (the Gemma projection and
-///   tied-head packed13 sidecars are never emitted for Laguna) and requires
-///   `rotary_emb.inv_freq` tables to be left out. The runtime config.json is
-///   the flat source config minus the empty `vision_config`, carrying the
-///   checkpoint's matching NVFP4 4-bit group-16 `quantization` and
-///   `quantization_config` blocks.
-/// - Legacy Gemma 4 31B 4-bit (nested `text_config`): the archived dense
-///   path, unchanged: flattened `text_config` runtime config plus the
-///   projection/tied-head metadata sidecars.
-///
-/// There is no expert streaming manifest -- the whole selected tree is one
-/// flat set of dense tensors, matching how the model (including every routed
-/// Laguna expert) is loaded fully into RAM at runtime init.
 public enum SwiftTransform {
     /// Tensor name prefix that marks a checkpoint tensor as part of the text
-    /// tower. Every other prefix (`vision_tower.`, `embed_vision.`,
-    /// `audio_tower.`, `multi_modal_projector.`, ...) is vision/audio/
-    /// multimodal-glue and is out of scope for this text-only challenge.
     static let textTowerPrefix = "language_model."
 
     public static func run(_ options: TransformOptions) throws -> TransformReport {
@@ -177,9 +132,6 @@ public enum SwiftTransform {
 
         if modelFamily == .laguna {
             // Fail before the multi-GB copy if the selected tensor set is
-            // structurally inconsistent with the quantization spec the
-            // emitted config.json declares (the runtime re-validates the
-            // full geometry against LagunaConfig at load).
             try LagunaCheckpointValidation.validateSelectedTensors(
                 selectedKeys: textKeys,
                 index: index,
@@ -218,9 +170,6 @@ public enum SwiftTransform {
             let selectedNames = textKeysByShard[shardName, default: []].sorted()
             if Set(selectedNames) == Set(header.tensors.keys) {
                 // Poolside's reference is already text-only. Preserve the
-                // byte-identical shard and use an APFS copy-on-write clone
-                // when source/output share a volume; fall back to a normal
-                // independent file copy elsewhere. Never publish a symlink.
                 try cloneOrCopyShard(from: source, to: destination)
                 copiedTensors += selectedNames.count
             } else {
@@ -255,10 +204,6 @@ public enum SwiftTransform {
             )
         case .laguna:
             // docs/laguna-weight-contract.md forbids derived layouts and
-            // metadata sidecars in the Poolside v2 contract, and the runtime loads exactly the
-            // indexed checkpoint tensors (its untied lm_head makes the
-            // Gemma tied-head packed13 sidecar meaningless anyway). Emit
-            // nothing beyond the pass-through tensor set.
             generatedProjectionMetadata = GeneratedAffineMetadataReport(
                 weightMap: [:],
                 tensorByteCount: 0
@@ -391,9 +336,6 @@ public enum SwiftTransform {
                         "checkpoint tensor \(key) byte length \(info.byteCount) does not match dtype \(info.dtype) and shape \(info.shape) expected \(expectedByteLength)"
                     )
                 }
-                // readHeader validated every data range against the opened
-                // target descriptor. Do not recheck via the shard pathname:
-                // FileManager reports a symlink's own size, not its target's.
                 guard info.dataStart >= 0, info.byteCount > 0 else {
                     throw MLXFastError.invalidInput(
                         "checkpoint tensor \(key) has an empty or invalid byte range"
@@ -488,9 +430,6 @@ public enum SwiftTransform {
         key.hasPrefix(textTowerPrefix)
     }
 
-    /// Poolside Laguna is already text-only and uses runtime-native
-    /// `model.*` / `lm_head.*` names. Legacy Gemma retains the
-    /// `language_model.*` selection. Precomputed rotary tables are omitted.
     static func isSelectedTextTowerKey(_ key: String, family: TransformModelFamily) -> Bool {
         switch family {
         case .gemma4:
@@ -611,20 +550,6 @@ public enum SwiftTransform {
     }
 
     /// Writes the runtime's `config.json`.
-    ///
-    /// Gemma 4 (legacy): the source checkpoint's `text_config` fields
-    /// flattened to the top level (the schema the archived Gemma 4 runtime
-    /// read), plus the
-    /// checkpoint-wide `quantization` block -- no vision or audio config, no
-    /// architecture/tokenizer metadata duplicated from
-    /// `tokenizer_config.json`.
-    ///
-    /// Laguna: the source config is already the flat schema
-    /// `LagunaConfig.load` parses (per docs/laguna-weight-contract.md the
-    /// transform may copy the source fields directly), so it is passed
-    /// through minus the empty multimodal `vision_config` stub. Its matching
-    /// NVFP4 4-bit group-16 `quantization` and `quantization_config` blocks are
-    /// both required and preserved.
     static func makeRuntimeConfigData(
         sourceConfigRoot root: [String: Any],
         family: TransformModelFamily

@@ -32,11 +32,6 @@ public struct LagunaUpstreamEquivalenceReport: Codable, Equatable {
 }
 
 /// Development-only cross-check between the challenge runtime and the
-/// vendored upstream Laguna implementation. Both models receive the same
-/// checkpoint arrays, prompt, teacher-forced decode tokens, and independent
-/// KV caches. The helper is never called by the benchmark protocol or scored
-/// path; operators invoke its gated test on the M5 before publishing new
-/// correctness artifacts.
 public enum LagunaUpstreamEquivalence {
     public static func compare(
         weightsPath: String,
@@ -67,9 +62,6 @@ public enum LagunaUpstreamEquivalence {
         try loader.denseStore.validateReadableByteRanges()
         try loader.validateRequiredMetadata(config: runtimeConfig)
 
-        // Load the 21.6 GB tensor set once, then install the same MLXArray
-        // objects into both module trees. Their random initializer graphs stay
-        // lazy and are overwritten before either model is evaluated.
         let loadedWeights = try loadRuntimeWeightArrays(denseStore: loader.denseStore)
         let runtime = LagunaRuntimeModel(runtimeConfig)
         let upstream = LagunaModel(upstreamConfig)

@@ -33,9 +33,6 @@ public final class DenseTensorStore {
     }
 
     /// Visits a shard in file order while keeping each tensor's source `Data`
-    /// inside its own autorelease pool. Callers that copy the tensor into its
-    /// final runtime representation during `body` never retain source bytes
-    /// beyond one tensor.
     func forEachMaterializedTensor(
         inShard shard: String,
         _ body: (DenseTensorRecord, MaterializedTensor) throws -> Void
@@ -91,9 +88,6 @@ public final class DenseTensorStore {
         let shardURL = URL(fileURLWithPath: weightsPath).appendingPathComponent(shard)
         let handle = try FileHandle(forReadingFrom: shardURL)
         // These descriptors feed short-lived staging buffers that are
-        // immediately copied into long-lived MLX allocations. Retaining the
-        // same bytes in the unified buffer cache can otherwise double the
-        // model-load footprint on memory-constrained Apple Silicon.
         _ = Darwin.fcntl(handle.fileDescriptor, F_NOCACHE, 1)
         _ = Darwin.fcntl(handle.fileDescriptor, F_RDAHEAD, 0)
         return handle

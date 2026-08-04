@@ -6,9 +6,6 @@ const char* ternary() {
 
 // Auto generated source for mlx/backend/metal/kernels/ternary.h
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/ternary.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/ternary.h"
 // Copyright © 2024 Apple Inc.

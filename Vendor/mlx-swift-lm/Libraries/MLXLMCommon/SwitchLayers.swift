@@ -6,16 +6,6 @@ import MLXNN
 // Port of https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/models/switch_layers.py
 
 /// Compiled SiLU-gated product (`silu(gate) * up`) for the common MoE GLU path.
-/// Fusing activation + product into one compiled, shapeless kernel cuts kernel
-/// dispatches and intermediates on the hot decode path. Upstream ef85ed0.
-///
-/// Gated by `MLXHardwareInfo.isCompiledDecodeSupported` (env `MLX_COMPILED_DECODE`,
-/// default on) like the sibling `compiledSwiGLU` / `safeGeluApproximate` fusions.
-/// The default SiLU `SwitchGLU` path wires this in as `activationProduct` (the
-/// highest-precedence branch in `callAsFunction`) and `LFM2MoE` calls it directly,
-/// so without the gate both would keep hitting compiled kernels on the very M1/M2 +
-/// macOS Tahoe machines the opt-out (MLX #3329) is meant to protect. Falls back to
-/// the plain uncompiled closure when off; the default (env unset) stays compiled.
 public let compiledSiluProduct: @Sendable (MLXArray, MLXArray) -> MLXArray = {
     let body: @Sendable (MLXArray, MLXArray) -> MLXArray = { gate, up in
         MLXNN.silu(gate) * up
@@ -26,8 +16,6 @@ public let compiledSiluProduct: @Sendable (MLXArray, MLXArray) -> MLXArray = {
     return body
 }()
 
-/// Compiled weighted expert-output combine (`(outputs * weights[..., None]).sum(-2)`).
-/// Shared by MoE routers (e.g. Gemma 4) to fuse the scale + reduce. Upstream ef85ed0.
 public let weightedExpertSum: @Sendable (MLXArray, MLXArray) -> MLXArray = compile(
     shapeless: true
 ) { outputs, weights in
@@ -37,13 +25,6 @@ public let weightedExpertSum: @Sendable (MLXArray, MLXArray) -> MLXArray = compi
 // MARK: - Compiled activation fusions (vMLX / osaurus-main port)
 
 /// Approximate (tanh) GELU written with `x * x * x` instead of the Power
-/// primitive (`x ** 3`). The Power primitive returns zero results under the
-/// macOS Tahoe Metal JIT (MLX #3329), so the explicit multiplies keep it safe
-/// under `compile(shapeless: true)`. Numerically identical to
-/// `MLXNN.geluApproximate`.
-///
-/// Gated by `MLXHardwareInfo.isCompiledDecodeSupported` (env `MLX_COMPILED_DECODE`,
-/// default on); falls back to the plain closure when compiled fusions are off.
 public let safeGeluApproximate: @Sendable (MLXArray) -> MLXArray = {
     let body: @Sendable (MLXArray) -> MLXArray = { (x: MLXArray) -> MLXArray in
         0.5 * x * (1 + tanh(sqrt(2 / Float.pi) * (x + 0.044715 * x * x * x)))
@@ -54,8 +35,6 @@ public let safeGeluApproximate: @Sendable (MLXArray) -> MLXArray = {
     return body
 }()
 
-/// Drop-in replacement for `MLXNN.GELU(approximation: .tanh)` that avoids the
-/// Power primitive crash. Use anywhere a tanh-approx GELU unary layer is needed.
 public class SafeGELU: Module, UnaryLayer {
     public override init() { super.init() }
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -64,9 +43,6 @@ public class SafeGELU: Module, UnaryLayer {
 }
 
 /// Compiled SiLU-gated GLU product (`silu(gate) * up`). Same math as
-/// `compiledSiluProduct` above, but gated by `MLXHardwareInfo` so M1/M2 + macOS
-/// Tahoe can opt out. Used by `SwitchGLU` when a SiLU activation is supplied via
-/// the custom-activation initializer (where `activationProduct` is nil).
 private let compiledSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
     let body: @Sendable (MLXArray, MLXArray) -> MLXArray = {
         (gate: MLXArray, up: MLXArray) -> MLXArray in
@@ -78,9 +54,6 @@ private let compiledSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
     return body
 }()
 
-/// Compiled GELU-gated GLU product (`geluApprox(gate) * up`), fusing the tanh
-/// GELU and the element-wise multiply into one shapeless kernel. Uses the
-/// Power-free `x * x * x` GELU so it is safe under `compile(shapeless: true)`.
 private let compiledGeGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
     let body: @Sendable (MLXArray, MLXArray) -> MLXArray = {
         (gate: MLXArray, up: MLXArray) -> MLXArray in
@@ -93,11 +66,6 @@ private let compiledGeGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
 }()
 
 /// Linear inverse-permutation scatter for the sorted MoE route table.
-/// `argSort` returns `order` as a uint32 permutation, so
-/// `inverse[order[i]] = i` has exactly one writer per output and produces the
-/// same integer bits as `argSort(order)` without another comparison sort.
-/// DEFAULT ON; set `DARKBLOOM_INVERSE_SCATTER=0` to restore the original
-/// second `argSort` path inside the same binary.
 private let inversePermutationScatterEnabled =
     ProcessInfo.processInfo.environment["DARKBLOOM_INVERSE_SCATTER"] != "0"
 
@@ -113,15 +81,6 @@ private let inversePermutationScatterKernel = MLXFast.metalKernel(
 )
 
 /// Stable counting sort for the flattened route table: uint32 keys in
-/// `[0, 256)`, `argSort`-identical output by construction. The vendored
-/// mbsort is stable at every stage (thread sort swaps only on strictly-less,
-/// the merge prefers A on ties), so its tie order is input order; a stable
-/// counting sort therefore reproduces the exact permutation for EVERY input,
-/// not just tested ones. Three dispatches replace the comparison-sort chain.
-/// Counts use threadgroup atomics (sums are commutative -> deterministic);
-/// the scatter is one thread per key walking the tile slice in input order,
-/// so no write order ever depends on scheduling.
-/// DEFAULT ON; `DARKBLOOM_ROUTE_COUNTING_SORT=0` restores `argSort`.
 private let routeCountingSortEnabled =
     ProcessInfo.processInfo.environment["DARKBLOOM_ROUTE_COUNTING_SORT"] != "0"
 
@@ -232,15 +191,6 @@ private func routeCountingSort(_ indices: MLXArray) -> MLXArray? {
 }
 
 /// Fused twin of the counting-sort scatter: at the exact write point where
-/// the stock scatter emits `order[off] = idx`, every downstream index
-/// product of the sorted-MoE chain is already known — `idx / m` is the
-/// gathered row (`order.floorDivide(m)`), the tested key `k` IS
-/// `indices[order[off]]`, and `off` is the inverse permutation entry for
-/// `idx`. Emitting all three here removes the standalone floorDivide, the
-/// `indices[order]` take, and the inverse-permutation dispatch from the
-/// serial sort->gather dependency chain, with byte-identical integer
-/// outputs by construction (same values, same producers' input-order walk).
-/// DEFAULT ON; `DARKBLOOM_ROUTE_FUSED_SCATTER=0` restores the stock chain.
 private let routeFusedScatterEnabled =
     ProcessInfo.processInfo.environment["DARKBLOOM_ROUTE_FUSED_SCATTER"] != "0"
 
@@ -383,18 +333,9 @@ public class SwitchGLU: Module {
     let hiddenDims: Int
     let numExperts: Int
     let activation: (MLXArray) -> MLXArray
-    /// Optional fused (activation * up) kernel. Set for the default SiLU path so
-    /// the GLU product runs as one compiled op; nil when a custom activation is
-    /// supplied (we then fall back to `activation(gate) * up`). Upstream ef85ed0.
     let activationProduct: (@Sendable (MLXArray, MLXArray) -> MLXArray)?
 
     /// Activation-type flags detected once at init from a tiny test input (vMLX
-    /// approach — no per-token check). Only consulted when `activationProduct` is
-    /// nil (the custom-activation path): they let SiLU/GELU custom activations use
-    /// the compiled `compiledSwiGLU` / `compiledGeGLU` fusions instead of the
-    /// uncompiled `activation(gate) * up`. On any mismatch we fall back to that
-    /// exact uncompiled path, so detection only ever enables a numerically
-    /// equivalent fast path — it can never change results.
     let isSiluActivation: Bool
     let isGeluActivation: Bool
 
@@ -411,9 +352,6 @@ public class SwitchGLU: Module {
         self.numExperts = numExperts
         self.activation = MLXNN.silu
         self.activationProduct = compiledSiluProduct
-        // Default path is SiLU and `activationProduct` is non-nil, so these are
-        // not consulted on the hot path; set them accurately for completeness
-        // (and to avoid a needless probe eval at load for every MoE layer).
         self.isSiluActivation = true
         self.isGeluActivation = false
 
@@ -447,10 +385,6 @@ public class SwitchGLU: Module {
         self.activation = activation
         self.activationProduct = nil
         // Detect SiLU/GELU once via a tiny test input (vMLX approach) so the hot
-        // path can select the compiled fusion without a per-token check. Exact
-        // equality is intentional: a match means the supplied closure computes
-        // that exact function; any non-match falls back to `activation(gate) * up`
-        // in callAsFunction, so this can only ever enable an equivalent fast path.
         let probe = MLXArray([Float(1.0)])
         let probeOut = activation(probe)
         let detectedSilu = (probeOut .== MLXNN.silu(probe)).all().item(Bool.self)
@@ -488,8 +422,6 @@ public class SwitchGLU: Module {
         let xGate: MLXArray
         let xUp: MLXArray
         if let gateUpProj {
-            // Pre-fused gate_up_proj weight from checkpoint — one gathered
-            // matmul via the polymorphic SwitchLinear call, then split.
             let xGateUp = gateUpProj(x, idx, sortedIndices: doSort)
             xGate = xGateUp[.ellipsis, ..<hiddenDims]
             xUp = xGateUp[.ellipsis, hiddenDims...]
@@ -551,9 +483,6 @@ public class SwitchLinear: Module, Quantizable {
     }
 
     /// Initializer meant for subclasses to provide weight and bias arrays directly.
-    ///
-    /// This is used e.g. by ``QuantizedSwitchLinear`` to provide quantized weights and biases
-    /// rather than have ``SwitchLinear`` compute them.
     public init(
         inputDims: Int, outputDims: Int, numExperts: Int,
         weight: MLXArray, bias: MLXArray? = nil

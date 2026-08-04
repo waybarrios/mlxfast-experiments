@@ -8,43 +8,20 @@ const char* steel_attention_nax() {
 // Auto generated source for mlx/backend/metal/kernels/steel/attn/kernels/steel_attention_nax.h
 
 // DARKBLOOM_ATTN_QHOIST default. DEFAULT OFF: unless the host prepends a
-// `#define DARKBLOOM_ATTN_QHOIST 1` ahead of this string (see
-// get_steel_attention_nax_kernel in mlx/backend/metal/jit_kernels.cpp), the
-// kernel below is byte-for-byte the upstream algorithm.
-//
-// The flag is deliberately a preprocessor define baked into the JIT source
-// string, NOT a Metal function constant. A function constant participates in
-// the pipeline specialization key; flipping one mid-process forces a second
-// pipeline compile that can land inside a timed forward. That exact failure
-// produced a reproducible 15-24% regression for
-// DARKBLOOM_PREFILL_GATHER_RUNSKIP (see quantized.cpp). A define is resolved
-// once, when the library source string is assembled, so exactly one variant is
-// ever compiled per process.
 #ifndef DARKBLOOM_ATTN_QHOIST
 #define DARKBLOOM_ATTN_QHOIST 0
 #endif
 
 // DARKBLOOM_ATTN_QBLOCK_MAJOR default. DEFAULT ON for the standalone ranked
-// candidate: remap the stock physical grid into query-block-major logical
-// order. The mapping is a pure permutation of threadgroups; it does not alter
-// any threadgroup's arithmetic or output. The JIT host may prepend an explicit
-// `#define DARKBLOOM_ATTN_QBLOCK_MAJOR 0` as an emergency opt-out.
 #ifndef DARKBLOOM_ATTN_QBLOCK_MAJOR
 #define DARKBLOOM_ATTN_QBLOCK_MAJOR 1
 #endif
 
 // DARKBLOOM_ATTN_QBLOCK_ZIGZAG default. DEFAULT ON for the balanced
-// qblock-major candidate: retain head-minor locality inside each query block,
-// but present query blocks in high/low order rather than monotonically
-// increasing causal work. The JIT host may prepend an explicit
-// `#define DARKBLOOM_ATTN_QBLOCK_ZIGZAG 0` to recover ascending qblock-major.
 #ifndef DARKBLOOM_ATTN_QBLOCK_ZIGZAG
 #define DARKBLOOM_ATTN_QBLOCK_ZIGZAG 1
 #endif
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/defines.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/defines.h"
 // Copyright © 2024 Apple Inc.
@@ -54,15 +31,9 @@ const char* steel_attention_nax() {
 #define STEEL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
 #define STEEL_PRAGMA_NO_UNROLL _Pragma("clang loop unroll(disable)")
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "/private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.9CLJ6d/Metal.xctoolchain/usr/metal/32023/lib/clang/32023.883/include/metal/__exec/units.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "/private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.9CLJ6d/Metal.xctoolchain/usr/metal/32023/lib/clang/32023.883/include/metal/__exec/units.h"
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/utils/type_traits.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils/type_traits.h"
 // Copyright © 2024 Apple Inc.
@@ -120,9 +91,6 @@ using pointer_element_t = typename pointer_element<remove_cv_t<T>>::type;
 
 #pragma METAL internals : disable
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 // Copyright © 2024 Apple Inc.
@@ -135,9 +103,6 @@ using pointer_element_t = typename pointer_element<remove_cv_t<T>>::type;
 namespace mlx {
 namespace steel {
 
-///////////////////////////////////////////////////////////////////////////////
-// Integral constant with casting
-///////////////////////////////////////////////////////////////////////////////
 
 template <typename T, T v>
 struct integral_constant {
@@ -168,9 +133,6 @@ constexpr constant bool is_integral_v = is_integral<T>::value;
 template <int val>
 using Int = integral_constant<int, val>;
 
-///////////////////////////////////////////////////////////////////////////////
-// Binary Operators on Integral constants
-///////////////////////////////////////////////////////////////////////////////
 
 #define integral_const_binop(__op__, __operator__)          \
   template <typename T, T tv, typename U, U uv>             \
@@ -235,9 +197,6 @@ constexpr void const_for_loop(F f) {
 
 #undef integral_const_binop
 
-///////////////////////////////////////////////////////////////////////////////
-// Reduction operators
-///////////////////////////////////////////////////////////////////////////////
 
 template <typename T>
 METAL_FUNC constexpr T sum(T x) {
@@ -254,9 +213,6 @@ METAL_FUNC constexpr auto sum(T x, Us... us) {
 
 #pragma METAL internals : disable
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/attn/nax.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/nax.h"
 // Copyright © 2025 Apple Inc.
@@ -271,16 +227,10 @@ METAL_FUNC constexpr auto sum(T x, Us... us) {
 
 using namespace metal;
 
-///////////////////////////////////////////////////////////////////////////////
-// MMA helper
-///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
 
-///////////////////////////////////////////////////////////////////////////////
-// NAX Steel with new tiles
-///////////////////////////////////////////////////////////////////////////////
 
 struct BaseNAXFrag {
   STEEL_CONST short kFragRows = 16;
@@ -1144,17 +1094,11 @@ METAL_FUNC void tile_matmad_nax(
 } // namespace steel
 } // namespace mlx
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/attn/params.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/params.h"
 // Copyright © 2024 Apple Inc.
 
 
-///////////////////////////////////////////////////////////////////////////////
-// Attn param classes
-///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -1193,9 +1137,6 @@ struct AttnMaskParams {
 } // namespace steel
 } // namespace mlx
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/utils.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/utils.h"
 // Copyright © 2024 Apple Inc.
@@ -1240,18 +1181,12 @@ METAL_FUNC ulong3 elem_to_loc_broadcast(
   return ulong3(loc_a, loc_b, loc_c);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/attn/transforms.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/transforms.h"
 // Copyright © 2024 Apple Inc.
 
 
 
-///////////////////////////////////////////////////////////////////////////////
-// Transforms and Epilogues
-///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -1315,9 +1250,6 @@ struct BlockSwizzle {
 } // namespace steel
 } // namespace mlx
 
-///////////////////////////////////////////////////////////////////////////////
-// Contents from "mlx/backend/metal/kernels/steel/attn/kernels/steel_attention_nax.h"
-///////////////////////////////////////////////////////////////////////////////
 
 #line 1 "mlx/backend/metal/kernels/steel/attn/kernels/steel_attention_nax.h"
 // Copyright © 2024-25 Apple Inc.
@@ -1325,9 +1257,6 @@ struct BlockSwizzle {
 
 using namespace mlx::steel;
 
-///////////////////////////////////////////////////////////////////////////////
-// GEMM kernels
-///////////////////////////////////////////////////////////////////////////////
 
 constant bool align_Q [[function_constant(200)]];
 constant bool align_K [[function_constant(201)]];
@@ -1417,12 +1346,6 @@ template <
   (void)simd_lane_id;
 
   // Move to the logical query block and head. The host dispatches the stock
-  // (NQ, H, B) grid. In the optional qblock-major arm, reinterpret its x-fast
-  // physical linear index as (query block major, query head minor). Since
-  // physical_linear ranges over exactly [0, NQ * H), quotient/remainder by H
-  // is a bijection onto the same logical coordinate set. Each threadgroup
-  // therefore retains its exact Q/K/V inputs, floating-point operation order,
-  // and disjoint output rows; only GPU presentation order changes.
 #if DARKBLOOM_ATTN_QBLOCK_MAJOR
   const ulong physical_linear =
       ulong(tid.y) * ulong(params->NQ) + ulong(tid.x);
@@ -1431,9 +1354,6 @@ template <
       physical_linear - physical_qblock * ulong(params->H);
 #if DARKBLOOM_ATTN_QBLOCK_ZIGZAG
   // Present causal work high, low, second-high, second-low, ... while keeping
-  // every query block's heads contiguous. Even ranks map injectively onto the
-  // upper half in descending order; odd ranks map onto the lower half in
-  // ascending order, so their disjoint union is exactly [0, NQ).
   const ulong logical_qblock =
       (physical_qblock & 1ul) == 0
       ? ulong(params->NQ) - 1 - physical_qblock / 2
@@ -1532,29 +1452,6 @@ template <
   }
 
   // Per-simdgroup causal K-block elision (level 1, always on). kb_lim above
-  // derives from the THREADGROUP's last row; this simdgroup owns only rows
-  // [tidl.x * BQ + tm, tidl.x * BQ + tm + kU * TQ). K blocks at or beyond
-  // sg_kb_lim lie entirely above its causal diagonal: the causal mask would
-  // set every element of its Stile rows to neg_inf, making the P tile
-  // exactly the all-+0.0 tile Stile.clear() already produces, new_max equal
-  // to max_score (factor == exp2(+0.0) == 1.0), and the sum_score update a
-  // +0.0 add into a value that is always >= +0.0. Skipping QK^T, the scale,
-  // both masks and the softmax for those blocks is therefore bit-exact.
-  // Level 2 also skips the P@V loads and MMAs: every Stile multiplicand is
-  // +0.0, so those instructions can only add a signed zero to Otile. That
-  // leaves every finite nonzero accumulator bit-identical; an exactly-zero
-  // accumulator can differ only in its zero sign, which is numerically equal
-  // through the final positive normalization and all downstream arithmetic.
-  // The kb trip count and every barrier stay untouched (the P@V loop contains
-  // a threadgroup_barrier at BD == 128, so a per-simdgroup trip count would be
-  // undefined behaviour); sg_active is simdgroup-uniform (tidl.x and tm only).
-  // Restricted to
-  // do_causal && !has_mask so the all-masked proof rests on the causal mask
-  // alone; the timed window passes no array mask.
-  // Tighten the lower bound to this simdgroup's first query row. For every
-  // block below this bound the causal predicate is the identity for every
-  // element already loaded into Stile, so the select loop can be skipped
-  // without changing a value or any arithmetic order.
   int sg_kb_min_causal = kb_min_causal;
   int sg_kb_lim = kb_lim;
   if (do_causal && !has_mask) {
@@ -1575,30 +1472,6 @@ template <
 
 #if DARKBLOOM_ATTN_QHOIST
   // DARKBLOOM_ATTN_QHOIST -- hoist the loop-invariant Q fragments.
-  //
-  // The kb loop advances K and V (`K += BK * K_strides[2]` at the bottom) but
-  // NEVER advances Q: the Q pointer is finalised above and is constant for the
-  // whole loop. The QK^T phase nevertheless re-executed `Qtile.load(...)` on
-  // every iteration, re-reading the identical TQ*TD fragments from device
-  // memory ~9 times per q-block at the frozen 512-token prefill window.
-  //
-  // Staging them once here is a PURE HOIST: the loads use the same pointer,
-  // the same offsets and the same bounds predicate as the in-loop version, and
-  // the mma consumes the identical fragment values in the identical order. No
-  // float arithmetic is touched, so no rounding boundary can move.
-  //
-  // Both loop nests are STEEL_PRAGMA_UNROLL, so every Qhoist index is a
-  // compile-time constant and the array stays in registers. If either unroll
-  // were ever dropped, Qhoist would spill to thread-local memory and this
-  // would become a pessimisation, not an optimisation.
-  //
-  // COST (BQ=64 BK=32 BD=128 WM=4 WN=1 => TQ=1 TD=8, T=bfloat16): TQ*TD = 8
-  // fragments x 8 elems x 2 B = 128 B/thread = 32 x 32-bit registers, live for
-  // the whole loop instead of one fragment (4 registers) live for part of it,
-  // so +28 registers/thread and +16 KB/threadgroup at 128 threads. See
-  // notes/21-attn-analysis.md for why that is expected to fit: this kernel
-  // allocates ZERO threadgroup memory, and on Apple family 9+ the on-chip pool
-  // is shared between registers and threadgroup memory.
   typename NAXTile<T, 1, 1>::frag_type Qhoist[TQ * TD];
 
   STEEL_PRAGMA_UNROLL
@@ -1630,9 +1503,6 @@ template <
 
     Stile.clear();
 
-    // Causal elision: guard the score computation and the zero P@V work, but
-    // never a barrier or the outer-loop pointer advance. See the sg_kb_lim
-    // comment above for the exactness argument.
     const bool sg_active = kb < sg_kb_lim;
     if (sg_active) {
 
@@ -1640,9 +1510,6 @@ template <
     for (short iq = 0; iq < TQ; iq++) {
       STEEL_PRAGMA_UNROLL
       for (short ik = 0; ik < TK; ik += 2) {
-        // Upstream ml-explore/mlx 3541c66b (PR #3843): unroll-by-4 lets the
-        // compiler interleave K-tile loads with the running mma chain;
-        // bitwise-identical outputs, +12% at head_dim 128 on M5 Max.
 #pragma clang loop unroll_count(4)
         for (short id = 0; id < TD; id++) {
           NAXTile<T, 1, 1> Qtile;
@@ -1655,17 +1522,6 @@ template <
 
 #if DARKBLOOM_ATTN_QHOIST
           // Q is loop-invariant: the kb loop advances K and V but never Q, so
-          // the load in the #else branch re-read the same addresses on every
-          // one of the ~9 K-block iterations. Consume the fragment staged
-          // before the loop instead.
-          //
-          // EXACTNESS: the staged load used the same base pointer, the same
-          // Q_load_off, the same stride and the same bounds predicate, so the
-          // bits in Qhoist are the bits this load would have returned. The mma
-          // below consumes them in the identical order. NO FLOAT ARITHMETIC IS
-          // TOUCHED AT ALL -- nothing is reassociated, no accumulation order
-          // changes, no rounding boundary moves. The only difference is WHEN
-          // the device read happened.
           Qtile.frag_at(0, 0) = Qhoist[iq * TD + id];
 #else
           if (!align_Q && is_last_q) {

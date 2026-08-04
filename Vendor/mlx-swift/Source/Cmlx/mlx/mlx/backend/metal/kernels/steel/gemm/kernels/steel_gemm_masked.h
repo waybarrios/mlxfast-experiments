@@ -4,9 +4,6 @@
 using namespace metal;
 using namespace mlx::steel;
 
-///////////////////////////////////////////////////////////////////////////////
-// GEMM kernels
-///////////////////////////////////////////////////////////////////////////////
 
 struct _NoMask {
   char x;
@@ -257,8 +254,6 @@ block_masked_gemm(
 
   int gemm_k_iterations = params->gemm_k_iterations_aligned;
 
-  ///////////////////////////////////////////////////////////////////////////////
-  // Do unaligned K iterations first
   if (!K_aligned) {
     const int k_last = params->gemm_k_iterations_aligned * BK;
     const int mask_idx_last = k_last / BM;
@@ -308,8 +303,6 @@ block_masked_gemm(
     }
   }
 
-  ///////////////////////////////////////////////////////////////////////////////
-  // MNK aligned loop
   if (MN_aligned) {
     for (; gemm_k_iterations > 0; gemm_k_iterations--) {
       threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -356,8 +349,6 @@ block_masked_gemm(
     return;
 
   }
-  ///////////////////////////////////////////////////////////////////////////////
-  // MN unaligned loop
   else {
     const bool M_aligned = (tgp_bm == BM);
     const bool N_aligned = (tgp_bn == BN);
@@ -589,8 +580,6 @@ block_masked_gemm(
   thread typename gemm_kernel::loader_b_t loader_b(
       B, params->ldb, Bs, simd_group_id, simd_lane_id);
 
-  ///////////////////////////////////////////////////////////////////////////////
-  // MNK aligned loop
   if (MN_aligned) {
     for (int k = 0; k < gemm_k_iterations; k++) {
       threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -643,8 +632,6 @@ block_masked_gemm(
     return;
 
   }
-  ///////////////////////////////////////////////////////////////////////////////
-  // MN unaligned loop
   else { // Loop over K - unaligned case
     short tgp_bm = min(BM, params->M - c_row);
     short tgp_bn = min(BN, params->N - c_col);

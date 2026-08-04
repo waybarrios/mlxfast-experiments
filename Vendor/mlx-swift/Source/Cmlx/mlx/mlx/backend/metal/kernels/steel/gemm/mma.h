@@ -12,9 +12,6 @@
 
 using namespace metal;
 
-///////////////////////////////////////////////////////////////////////////////
-// MMA helper
-///////////////////////////////////////////////////////////////////////////////
 
 namespace mlx {
 namespace steel {
@@ -484,7 +481,6 @@ struct BlockMMA {
   short As_offset;
   short Bs_offset;
 
-  /* Constructor */
   METAL_FUNC BlockMMA(
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
       ushort simd_lane_id [[thread_index_in_simdgroup]]) {
@@ -504,7 +500,6 @@ struct BlockMMA {
     sn += tn;
   }
 
-  /* (BM, BK) X (BK, BN) multiply accumulate function */
   METAL_FUNC void mma(const threadgroup T* As, const threadgroup T* Bs) {
     // Adjust for simdgroup and thread location
     As += As_offset;
@@ -531,7 +526,6 @@ struct BlockMMA {
     }
   }
 
-  /* Store results from simdgroup_matrix results into device memory */
   METAL_FUNC void store_result(device U* D, const int ldd) {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
@@ -583,7 +577,6 @@ struct BlockMMA {
     Ctile.template store_safe<U, WM, WN>(D, ldd, dst_tile_dims);
   }
 
-  /* Apply epilogue */
   template <typename UnaryEpilogue>
   METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) {
     // Loop over all simdgroup tiles
@@ -593,7 +586,6 @@ struct BlockMMA {
     }
   }
 
-  /* Apply epilogue */
   template <typename BinaryEpilogue>
   METAL_FUNC void apply_epilogue(
       const device U* C,
@@ -621,7 +613,6 @@ struct BlockMMA {
     }
   }
 
-  /* Apply epilogue */
   template <typename BinaryEpilogue>
   METAL_FUNC void apply_epilogue_safe(
       const device U* C,
@@ -666,7 +657,6 @@ struct BlockMMA {
     }
   }
 
-  /* Store results from simdgroup_matrix results into device memory */
   METAL_FUNC void store_result(
       device U* D,
       const int ldd,
@@ -816,7 +806,6 @@ struct BlockMMA<
   short sm, sn;
   short As_offset, Bs_offset;
 
-  /* Constructor */
   METAL_FUNC BlockMMA(
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
       ushort simd_lane_id [[thread_index_in_simdgroup]]) {
@@ -836,7 +825,6 @@ struct BlockMMA<
     sn += tn;
   }
 
-  /* Karatsuba MMA: 3 real MMAs per K-chunk */
   METAL_FUNC void mma(
       const threadgroup complex64_t* As,
       const threadgroup complex64_t* Bs) {
@@ -896,7 +884,6 @@ struct BlockMMA<
     }
   }
 
-  /* Store results from simdgroup_matrix results into device memory */
   METAL_FUNC void store_result(device U* D, const int ldd) {
     // Adjust for simdgroup and thread location
     D += sm * ldd + sn;
@@ -972,7 +959,6 @@ struct BlockMMA<
     }
   }
 
-  /* Apply epilogue */
   template <typename UnaryEpilogue>
   METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) {
     STEEL_PRAGMA_UNROLL
@@ -984,7 +970,6 @@ struct BlockMMA<
     }
   }
 
-  /* Apply epilogue */
   template <typename BinaryEpilogue>
   METAL_FUNC void apply_epilogue(
       const device U* C,
@@ -1015,7 +1000,6 @@ struct BlockMMA<
     }
   }
 
-  /* Apply epilogue */
   template <typename BinaryEpilogue>
   METAL_FUNC void apply_epilogue_safe(
       const device U* C,
@@ -1064,7 +1048,6 @@ struct BlockMMA<
     }
   }
 
-  /* Store results from simdgroup_matrix results into device memory */
   METAL_FUNC void store_result(
       device U* D,
       const int ldd,
